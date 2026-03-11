@@ -20,3 +20,10 @@
 - **[Pavlovic - Fabio Valentini Deepcharts Bootcamp](https://www.youtube.com/watch?v=2Ok-3N_4kIQ&list=PLIFh3YBSbU-jqWoBpBEnrUDcNob6RnJ7J)** – Goes through what was tought in Fabio Valentini's exclusive Deepcharts bootcamp.
 - **[CarmineRosato - OrderFlow Series](https://www.youtube.com/playlist?list=PLWQioWs8oOiFKQnwIIYbw8N7ks7d-UAPQ)** - Indepth order flow series covering how Carmine utilises order flow to trade.
 - **[AndreaCimi - Complete Orderflow Trading Course](https://www.youtube.com/playlist?list=PLBVwIU37953qr7DBLMJVXqcaVrJAaQy3D)** - Fundamentals of understanding order flow trading.
+
+## External tools
+- **[Free Bookmap G+ youtube live stream](https://www.youtube.com/@otlsignals)** (there are other channels but I preferred this one as it is the Global+ and provides the DOM Pro - for ES, NQ, GC, SI futures)
+
+
+
+
