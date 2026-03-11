@@ -1,6 +1,4 @@
-# My Own Problems
-
-## Issues and solutions
+# **My Own Problems**
 
 ### Right bias, wrong entry
 >_I would find myself with the correct directional bias BUT as soon as I enter the trade, I get stopped out by a few ticks or 1-2 points and then price heads to my target... DAFUQ!?_
