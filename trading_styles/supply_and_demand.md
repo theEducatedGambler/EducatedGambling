@@ -3,8 +3,8 @@
 ## Explaination
 Supply and demand is the core principal of trading. Basically if the price of an object is thought to be at a: 
 
-* **Discount => DEMAND**
-* **Premium => SUPPLY**
+- **Discount => DEMAND**
+- **Premium => SUPPLY**
 
 These levels are constantly shifting with the market regime and sentiment. When sudden influencing factors (like macro events) impact the market you will see this shift a lot faster as confidence is either gained or lost.
 
@@ -28,8 +28,8 @@ I look to volume profile concepts and order flow to validate historic and curren
 
 ## Level rotation
 If a S&D level is broken, it is possible that that rotation will occur and the opposing side will begin to actively defend this level:
-* **Broken SUPPLY + dominating BUYERS = new DEMAND**
-* **Broken DEMAND + dominating SELLERS = new SUPPLY**
+- **Broken SUPPLY + dominating BUYERS = new DEMAND**
+- **Broken DEMAND + dominating SELLERS = new SUPPLY**
 
 It is important to note that a broken level can break down but then be reclaimed in the following day/session. 
 
@@ -39,7 +39,7 @@ Without going into advanced discretion, to trade with this concept you simply ha
 It is not guaranteed that price will always head to these levels so if you are starting out, just sit on your hands and wait.
 
 ## Resources
-* **[IBLV Trading - Master Institutional Supply & Demand In 7 Minutes (Full Trading Guide)](https://www.youtube.com/watch?v=75DJN5UVQnw)**
+- **[IBLV Trading - Master Institutional Supply & Demand In 7 Minutes (Full Trading Guide)](https://www.youtube.com/watch?v=75DJN5UVQnw)**
 - **[Octavia Trades - Supply and Demand Strategy](https://www.youtube.com/watch?v=WqKPCWIFXa0)**
 - **[Carmine Rosato - Complete Supply & Demand Trading Guide (DRAW - FIND - TRADE Zones)](https://www.youtube.com/watch?v=_ffbix1afZs&t=221s)**
 - **[Peachy Investor - The 3 Laws of Supply & Demand Trading (ULTIMATE Guide)](https://www.youtube.com/watch?v=SnrfsjLI6nI)**
