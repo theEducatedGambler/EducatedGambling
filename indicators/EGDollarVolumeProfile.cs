@@ -27,7 +27,7 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
     [CategoryOrder("Largest Volume", 5)]
     [CategoryOrder("Text", 6)]
     [CategoryOrder("Colors", 7)]
-    public class DKDollarVolumeProfile : Indicator
+    public class EGDollarVolumeProfile : Indicator
     {
         private static readonly TimeSpan RthStart = new TimeSpan(9, 30, 0);
         private static readonly TimeSpan RthEnd = new TimeSpan(16, 0, 0);
@@ -60,7 +60,7 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
         {
             if (State == State.SetDefaults)
             {
-                Name = "DKDollarVolumeProfile";
+                Name = "EGDollarVolumeProfile";
                 Description = "Session dollar-volume profile split by aggressor side, from a hidden Last/Bid/Ask tick series.";
                 Calculate = Calculate.OnEachTick;
                 IsOverlay = true;
@@ -69,8 +69,8 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
                 ScaleJustification = NinjaTrader.Gui.Chart.ScaleJustification.Right;
                 IsSuspendedWhileInactive = false;
 
-                SessionFilter = DKDollarVolumeProfileSessionFilter.RTH;
-                BarFill = DKDollarVolumeProfileBarFillMode.Solid;
+                SessionFilter = EGDollarVolumeProfileSessionFilter.RTH;
+                BarFill = EGDollarVolumeProfileBarFillMode.Solid;
                 GradientLevel = 5;
                 PriceGroupingPoints = 5.75;
                 BarLengthPixels = 250;
@@ -83,7 +83,7 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
                 DominantLevelThreshold = 80;
                 DominantColor = System.Windows.Media.Brushes.Gold;
                 ExtendDominantLevel = false;
-                ExtendMode = DKDollarVolumeProfileExtendMode.Bar;
+                ExtendMode = EGDollarVolumeProfileExtendMode.Bar;
                 LineWidthPixels = 2;
                 LineStyle = DashStyleHelper.Solid;
                 ExtendedDominantLineBarColor = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromArgb(60, 255, 215, 0));
@@ -91,7 +91,7 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
                 MaxLargestVolumeLevelsPerSide = 3;
                 LargestVolumeColor = System.Windows.Media.Brushes.Cyan;
                 ExtendLargestVolumeLevel = false;
-                ExtendLargestVolumeMode = DKDollarVolumeProfileExtendMode.Bar;
+                ExtendLargestVolumeMode = EGDollarVolumeProfileExtendMode.Bar;
                 LargestVolumeLineWidthPixels = 2;
                 LargestVolumeLineStyle = DashStyleHelper.Solid;
                 LargestBuyVolumeExtendedLineBarColor = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromArgb(60, 0, 255, 255));
@@ -216,7 +216,7 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
             double price = Close[0];
             double size = Volume[0];
 
-            if (SessionFilter == DKDollarVolumeProfileSessionFilter.RTH && !IsInsideRth(Time[0]))
+            if (SessionFilter == EGDollarVolumeProfileSessionFilter.RTH && !IsInsideRth(Time[0]))
             {
                 lastLastPrice = price;
                 return;
@@ -340,7 +340,7 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
 
                 if (ExtendDominantLevel && extendedDominantLineBarBrushDx != null && isDominantLevel)
                 {
-                    if (ExtendMode == DKDollarVolumeProfileExtendMode.Bar)
+                    if (ExtendMode == EGDollarVolumeProfileExtendMode.Bar)
                     {
                         var extendRect = new SharpDX.RectangleF(ChartPanel.X, y - rowHeight / 2f, barAreaRight - ChartPanel.X, rowHeight);
                         RenderTarget.FillRectangle(extendRect, extendedDominantLineBarBrushDx);
@@ -358,7 +358,7 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
 
                     if (extendedLargestVolumeBrush != null)
                     {
-                        if (ExtendLargestVolumeMode == DKDollarVolumeProfileExtendMode.Bar)
+                        if (ExtendLargestVolumeMode == EGDollarVolumeProfileExtendMode.Bar)
                         {
                             var extendRect = new SharpDX.RectangleF(ChartPanel.X, y - rowHeight / 2f, barAreaRight - ChartPanel.X, rowHeight);
                             RenderTarget.FillRectangle(extendRect, extendedLargestVolumeBrush);
@@ -371,7 +371,7 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
                 }
 
                 var brush = netUsd >= 0 ? buyBrushDx : sellBrushDx;
-                if (BarFill == DKDollarVolumeProfileBarFillMode.Gradient)
+                if (BarFill == EGDollarVolumeProfileBarFillMode.Gradient)
                 {
                     double sideMax = netUsd >= 0 ? maxBuyNet : maxSellNet;
                     double intensity = sideMax > 0 ? Math.Abs(netUsd) / sideMax : 1.0;
@@ -431,13 +431,13 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
 
         [XmlIgnore]
         [Display(Name = "Session", Description = "Restrict accumulation to Regular Trading Hours (RTH) or include the full extended session (ETH)", GroupName = "Filter", Order = 1)]
-        public DKDollarVolumeProfileSessionFilter SessionFilter { get; set; }
+        public EGDollarVolumeProfileSessionFilter SessionFilter { get; set; }
 
         [Browsable(false)]
         public string SessionFilterSerializable
         {
             get { return SessionFilter.ToString(); }
-            set { SessionFilter = (DKDollarVolumeProfileSessionFilter)Enum.Parse(typeof(DKDollarVolumeProfileSessionFilter), value); }
+            set { SessionFilter = (EGDollarVolumeProfileSessionFilter)Enum.Parse(typeof(EGDollarVolumeProfileSessionFilter), value); }
         }
 
         // ----- Layout -----
@@ -480,13 +480,13 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
 
         [XmlIgnore]
         [Display(Name = "Bar Fill", Description = "Solid keeps every bar at full opacity; Gradient scales each bar's opacity by its strength relative to the strongest bar on its side", GroupName = "Bar Fill", Order = 1)]
-        public DKDollarVolumeProfileBarFillMode BarFill { get; set; }
+        public EGDollarVolumeProfileBarFillMode BarFill { get; set; }
 
         [Browsable(false)]
         public string BarFillSerializable
         {
             get { return BarFill.ToString(); }
-            set { BarFill = (DKDollarVolumeProfileBarFillMode)Enum.Parse(typeof(DKDollarVolumeProfileBarFillMode), value); }
+            set { BarFill = (EGDollarVolumeProfileBarFillMode)Enum.Parse(typeof(EGDollarVolumeProfileBarFillMode), value); }
         }
 
         [NinjaScriptProperty]
@@ -511,13 +511,13 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
 
         [XmlIgnore]
         [Display(Name = "Extend Mode", Description = "Bar fills the full chart width behind the level; Line draws a single horizontal line instead", GroupName = "Dominant Levels", Order = 4)]
-        public DKDollarVolumeProfileExtendMode ExtendMode { get; set; }
+        public EGDollarVolumeProfileExtendMode ExtendMode { get; set; }
 
         [Browsable(false)]
         public string ExtendModeSerializable
         {
             get { return ExtendMode.ToString(); }
-            set { ExtendMode = (DKDollarVolumeProfileExtendMode)Enum.Parse(typeof(DKDollarVolumeProfileExtendMode), value); }
+            set { ExtendMode = (EGDollarVolumeProfileExtendMode)Enum.Parse(typeof(EGDollarVolumeProfileExtendMode), value); }
         }
 
         [NinjaScriptProperty]
@@ -546,13 +546,13 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
 
         [XmlIgnore]
         [Display(Name = "Extend Largest Volume Mode", Description = "Bar fills the full chart width behind the level; Line draws a single horizontal line instead", GroupName = "Largest Volume", Order = 4)]
-        public DKDollarVolumeProfileExtendMode ExtendLargestVolumeMode { get; set; }
+        public EGDollarVolumeProfileExtendMode ExtendLargestVolumeMode { get; set; }
 
         [Browsable(false)]
         public string ExtendLargestVolumeModeSerializable
         {
             get { return ExtendLargestVolumeMode.ToString(); }
-            set { ExtendLargestVolumeMode = (DKDollarVolumeProfileExtendMode)Enum.Parse(typeof(DKDollarVolumeProfileExtendMode), value); }
+            set { ExtendLargestVolumeMode = (EGDollarVolumeProfileExtendMode)Enum.Parse(typeof(EGDollarVolumeProfileExtendMode), value); }
         }
 
         [NinjaScriptProperty]
@@ -567,22 +567,22 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
         // ----- Text -----
 
         [NinjaScriptProperty]
-        [TypeConverter(typeof(DKDollarVolumeProfileFontFamilyConverter))]
+        [TypeConverter(typeof(EGDollarVolumeProfileFontFamilyConverter))]
         [Display(Name = "Price Font Family", GroupName = "Text", Order = 1)]
         public string PriceFontFamily { get; set; }
 
         [NinjaScriptProperty]
-        [TypeConverter(typeof(DKDollarVolumeProfileFontSizeConverter))]
+        [TypeConverter(typeof(EGDollarVolumeProfileFontSizeConverter))]
         [Display(Name = "Price Font Size", GroupName = "Text", Order = 2)]
         public double PriceFontSize { get; set; }
 
         [NinjaScriptProperty]
-        [TypeConverter(typeof(DKDollarVolumeProfileFontFamilyConverter))]
+        [TypeConverter(typeof(EGDollarVolumeProfileFontFamilyConverter))]
         [Display(Name = "Volume Font Family", GroupName = "Text", Order = 3)]
         public string VolumeFontFamily { get; set; }
 
         [NinjaScriptProperty]
-        [TypeConverter(typeof(DKDollarVolumeProfileFontSizeConverter))]
+        [TypeConverter(typeof(EGDollarVolumeProfileFontSizeConverter))]
         [Display(Name = "Volume Font Size", GroupName = "Text", Order = 4)]
         public double VolumeFontSize { get; set; }
 
@@ -744,13 +744,13 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
         #endregion
     }
 
-    public enum DKDollarVolumeProfileSessionFilter { RTH, ETH }
+    public enum EGDollarVolumeProfileSessionFilter { RTH, ETH }
 
-    public enum DKDollarVolumeProfileBarFillMode { Solid, Gradient }
+    public enum EGDollarVolumeProfileBarFillMode { Solid, Gradient }
 
-    public enum DKDollarVolumeProfileExtendMode { Line, Bar }
+    public enum EGDollarVolumeProfileExtendMode { Line, Bar }
 
-    public class DKDollarVolumeProfileFontFamilyConverter : TypeConverter
+    public class EGDollarVolumeProfileFontFamilyConverter : TypeConverter
     {
         private static readonly StandardValuesCollection Values = new StandardValuesCollection(
             Fonts.SystemFontFamilies
@@ -763,7 +763,7 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
         public override StandardValuesCollection GetStandardValues(ITypeDescriptorContext c) => Values;
     }
 
-    public class DKDollarVolumeProfileFontSizeConverter : TypeConverter
+    public class EGDollarVolumeProfileFontSizeConverter : TypeConverter
     {
         private static readonly StandardValuesCollection Values = new StandardValuesCollection(
             new double[] { 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 18, 20, 22, 24, 28, 32, 36, 48, 72 });
