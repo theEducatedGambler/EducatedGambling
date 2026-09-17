@@ -68,7 +68,7 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
         {
             if (State == State.SetDefaults)
             {
-                Description = @"Footprint-style ladder for the current bar only, on any chart timeframe - not configurable, by design. One row per traded tick price within the current bar's range: bid volume, ask volume, and delta at that level, plus a diverging delta-strength histogram. Row background is blue when ask (buy) volume leads at that level, red/orange when bid (sell) volume leads. Resets the moment a new bar starts. Buy/sell classification uses the quote rule (trade price at/above the simultaneous ask = buy-initiated, at/below the simultaneous bid = sell-initiated) via three hidden 1-tick data series (Last, Bid, Ask) - no Tick Replay required. See root CLAUDE.md 'Historical trade-print (tick-level) data' section for the underlying technique.";
+                Description = "Footprint-style order flow ladder showing per-price bid/ask volume and delta for the current bar, with a delta histogram, POC, and imbalance/large-trade highlighting.";
                 Name = "EGFootprintLadder";
                 Calculate = Calculate.OnBarClose;
                 IsOverlay = true;
@@ -230,8 +230,6 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
             }
         }
 
-        // Detection only for now - rendering comes once the threshold is confirmed to be
-        // catching the right trades via the diagnostic Print below.
         private void RecordLargeTrade(double price, double size, bool isBuy)
         {
             List<LargeTradeEvent> list;
@@ -251,10 +249,6 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
 
             if (size > maxLargeTradeSizeThisBar)
                 maxLargeTradeSizeThisBar = size;
-
-            Print(string.Format(CultureInfo.InvariantCulture,
-                "[EGFootprintLadder] Large trade: price={0} size={1} side={2} maxLargeTradeSizeThisBar={3}",
-                price, size, isBuy ? "BUY" : "SELL", maxLargeTradeSizeThisBar));
         }
 
         protected override void OnRender(ChartControl chartControl, ChartScale chartScale)
@@ -636,7 +630,7 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
 
         [NinjaScriptProperty]
         [XmlIgnore]
-        [Display(Name = "Bids", Description = "Row background when bid (sell) volume leads at that price level", GroupName = "Colors", Order = 1)]
+        [Display(Name = "Sell Pressure", Description = "Row background when bid (sell) volume leads at that price level", GroupName = "Colors", Order = 1)]
         public Brush SellRowColor { get; set; }
 
         [Browsable(false)]
@@ -648,7 +642,7 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
 
         [NinjaScriptProperty]
         [XmlIgnore]
-        [Display(Name = "Ask", Description = "Row background when ask (buy) volume leads at that price level", GroupName = "Colors", Order = 2)]
+        [Display(Name = "Buy Pressure", Description = "Row background when ask (buy) volume leads at that price level", GroupName = "Colors", Order = 2)]
         public Brush BuyRowColor { get; set; }
 
         [Browsable(false)]
@@ -810,3 +804,60 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
         public override StandardValuesCollection GetStandardValues(ITypeDescriptorContext c) => Values;
     }
 }
+
+#region NinjaScript generated code. Neither change nor remove.
+
+namespace NinjaTrader.NinjaScript.Indicators
+{
+	public partial class Indicator : NinjaTrader.Gui.NinjaScript.IndicatorRenderBase
+	{
+		private EducatedGambling.EGFootprintLadder[] cacheEGFootprintLadder;
+		public EducatedGambling.EGFootprintLadder EGFootprintLadder(int offsetPixels, int ladderGapPixels, int largeTradeGapPixels, int ticksPerRow, int maxLadderRows, bool showDeltaBar, int deltaBarMaxWidth, int deltaBarHeightPixels, int deltaBarOpacity, bool showPoc, int pocLineHeightPixels, bool showImbalance, double imbalanceRatio, int ladderWidth, string textFontFamily, double fontSize, int rowOpacity, bool extendLadderBar, bool showLargeTrades, int maxLargeTradesPerRow, int largeTradeThreshold, int largeTradeDotDiameterPixels, int largeTradeDotSpacingPixels, Brush sellRowColor, Brush buyRowColor, Brush neutralRowColor, Brush rowTextColor, Brush pocLineColor, Brush imbalanceColor, Brush largeAskColor, Brush largeBidColor, int gradientLevel)
+		{
+			return EGFootprintLadder(Input, offsetPixels, ladderGapPixels, largeTradeGapPixels, ticksPerRow, maxLadderRows, showDeltaBar, deltaBarMaxWidth, deltaBarHeightPixels, deltaBarOpacity, showPoc, pocLineHeightPixels, showImbalance, imbalanceRatio, ladderWidth, textFontFamily, fontSize, rowOpacity, extendLadderBar, showLargeTrades, maxLargeTradesPerRow, largeTradeThreshold, largeTradeDotDiameterPixels, largeTradeDotSpacingPixels, sellRowColor, buyRowColor, neutralRowColor, rowTextColor, pocLineColor, imbalanceColor, largeAskColor, largeBidColor, gradientLevel);
+		}
+
+		public EducatedGambling.EGFootprintLadder EGFootprintLadder(ISeries<double> input, int offsetPixels, int ladderGapPixels, int largeTradeGapPixels, int ticksPerRow, int maxLadderRows, bool showDeltaBar, int deltaBarMaxWidth, int deltaBarHeightPixels, int deltaBarOpacity, bool showPoc, int pocLineHeightPixels, bool showImbalance, double imbalanceRatio, int ladderWidth, string textFontFamily, double fontSize, int rowOpacity, bool extendLadderBar, bool showLargeTrades, int maxLargeTradesPerRow, int largeTradeThreshold, int largeTradeDotDiameterPixels, int largeTradeDotSpacingPixels, Brush sellRowColor, Brush buyRowColor, Brush neutralRowColor, Brush rowTextColor, Brush pocLineColor, Brush imbalanceColor, Brush largeAskColor, Brush largeBidColor, int gradientLevel)
+		{
+			if (cacheEGFootprintLadder != null)
+				for (int idx = 0; idx < cacheEGFootprintLadder.Length; idx++)
+					if (cacheEGFootprintLadder[idx] != null && cacheEGFootprintLadder[idx].OffsetPixels == offsetPixels && cacheEGFootprintLadder[idx].LadderGapPixels == ladderGapPixels && cacheEGFootprintLadder[idx].LargeTradeGapPixels == largeTradeGapPixels && cacheEGFootprintLadder[idx].TicksPerRow == ticksPerRow && cacheEGFootprintLadder[idx].MaxLadderRows == maxLadderRows && cacheEGFootprintLadder[idx].ShowDeltaBar == showDeltaBar && cacheEGFootprintLadder[idx].DeltaBarMaxWidth == deltaBarMaxWidth && cacheEGFootprintLadder[idx].DeltaBarHeightPixels == deltaBarHeightPixels && cacheEGFootprintLadder[idx].DeltaBarOpacity == deltaBarOpacity && cacheEGFootprintLadder[idx].ShowPoc == showPoc && cacheEGFootprintLadder[idx].PocLineHeightPixels == pocLineHeightPixels && cacheEGFootprintLadder[idx].ShowImbalance == showImbalance && cacheEGFootprintLadder[idx].ImbalanceRatio == imbalanceRatio && cacheEGFootprintLadder[idx].LadderWidth == ladderWidth && cacheEGFootprintLadder[idx].TextFontFamily == textFontFamily && cacheEGFootprintLadder[idx].FontSize == fontSize && cacheEGFootprintLadder[idx].RowOpacity == rowOpacity && cacheEGFootprintLadder[idx].ExtendLadderBar == extendLadderBar && cacheEGFootprintLadder[idx].ShowLargeTrades == showLargeTrades && cacheEGFootprintLadder[idx].MaxLargeTradesPerRow == maxLargeTradesPerRow && cacheEGFootprintLadder[idx].LargeTradeThreshold == largeTradeThreshold && cacheEGFootprintLadder[idx].LargeTradeDotDiameterPixels == largeTradeDotDiameterPixels && cacheEGFootprintLadder[idx].LargeTradeDotSpacingPixels == largeTradeDotSpacingPixels && cacheEGFootprintLadder[idx].SellRowColor == sellRowColor && cacheEGFootprintLadder[idx].BuyRowColor == buyRowColor && cacheEGFootprintLadder[idx].NeutralRowColor == neutralRowColor && cacheEGFootprintLadder[idx].RowTextColor == rowTextColor && cacheEGFootprintLadder[idx].PocLineColor == pocLineColor && cacheEGFootprintLadder[idx].ImbalanceColor == imbalanceColor && cacheEGFootprintLadder[idx].LargeAskColor == largeAskColor && cacheEGFootprintLadder[idx].LargeBidColor == largeBidColor && cacheEGFootprintLadder[idx].GradientLevel == gradientLevel && cacheEGFootprintLadder[idx].EqualsInput(input))
+						return cacheEGFootprintLadder[idx];
+			return CacheIndicator<EducatedGambling.EGFootprintLadder>(new EducatedGambling.EGFootprintLadder(){ OffsetPixels = offsetPixels, LadderGapPixels = ladderGapPixels, LargeTradeGapPixels = largeTradeGapPixels, TicksPerRow = ticksPerRow, MaxLadderRows = maxLadderRows, ShowDeltaBar = showDeltaBar, DeltaBarMaxWidth = deltaBarMaxWidth, DeltaBarHeightPixels = deltaBarHeightPixels, DeltaBarOpacity = deltaBarOpacity, ShowPoc = showPoc, PocLineHeightPixels = pocLineHeightPixels, ShowImbalance = showImbalance, ImbalanceRatio = imbalanceRatio, LadderWidth = ladderWidth, TextFontFamily = textFontFamily, FontSize = fontSize, RowOpacity = rowOpacity, ExtendLadderBar = extendLadderBar, ShowLargeTrades = showLargeTrades, MaxLargeTradesPerRow = maxLargeTradesPerRow, LargeTradeThreshold = largeTradeThreshold, LargeTradeDotDiameterPixels = largeTradeDotDiameterPixels, LargeTradeDotSpacingPixels = largeTradeDotSpacingPixels, SellRowColor = sellRowColor, BuyRowColor = buyRowColor, NeutralRowColor = neutralRowColor, RowTextColor = rowTextColor, PocLineColor = pocLineColor, ImbalanceColor = imbalanceColor, LargeAskColor = largeAskColor, LargeBidColor = largeBidColor, GradientLevel = gradientLevel }, input, ref cacheEGFootprintLadder);
+		}
+	}
+}
+
+namespace NinjaTrader.NinjaScript.MarketAnalyzerColumns
+{
+	public partial class MarketAnalyzerColumn : MarketAnalyzerColumnBase
+	{
+		public Indicators.EducatedGambling.EGFootprintLadder EGFootprintLadder(int offsetPixels, int ladderGapPixels, int largeTradeGapPixels, int ticksPerRow, int maxLadderRows, bool showDeltaBar, int deltaBarMaxWidth, int deltaBarHeightPixels, int deltaBarOpacity, bool showPoc, int pocLineHeightPixels, bool showImbalance, double imbalanceRatio, int ladderWidth, string textFontFamily, double fontSize, int rowOpacity, bool extendLadderBar, bool showLargeTrades, int maxLargeTradesPerRow, int largeTradeThreshold, int largeTradeDotDiameterPixels, int largeTradeDotSpacingPixels, Brush sellRowColor, Brush buyRowColor, Brush neutralRowColor, Brush rowTextColor, Brush pocLineColor, Brush imbalanceColor, Brush largeAskColor, Brush largeBidColor, int gradientLevel)
+		{
+			return indicator.EGFootprintLadder(Input, offsetPixels, ladderGapPixels, largeTradeGapPixels, ticksPerRow, maxLadderRows, showDeltaBar, deltaBarMaxWidth, deltaBarHeightPixels, deltaBarOpacity, showPoc, pocLineHeightPixels, showImbalance, imbalanceRatio, ladderWidth, textFontFamily, fontSize, rowOpacity, extendLadderBar, showLargeTrades, maxLargeTradesPerRow, largeTradeThreshold, largeTradeDotDiameterPixels, largeTradeDotSpacingPixels, sellRowColor, buyRowColor, neutralRowColor, rowTextColor, pocLineColor, imbalanceColor, largeAskColor, largeBidColor, gradientLevel);
+		}
+
+		public Indicators.EducatedGambling.EGFootprintLadder EGFootprintLadder(ISeries<double> input , int offsetPixels, int ladderGapPixels, int largeTradeGapPixels, int ticksPerRow, int maxLadderRows, bool showDeltaBar, int deltaBarMaxWidth, int deltaBarHeightPixels, int deltaBarOpacity, bool showPoc, int pocLineHeightPixels, bool showImbalance, double imbalanceRatio, int ladderWidth, string textFontFamily, double fontSize, int rowOpacity, bool extendLadderBar, bool showLargeTrades, int maxLargeTradesPerRow, int largeTradeThreshold, int largeTradeDotDiameterPixels, int largeTradeDotSpacingPixels, Brush sellRowColor, Brush buyRowColor, Brush neutralRowColor, Brush rowTextColor, Brush pocLineColor, Brush imbalanceColor, Brush largeAskColor, Brush largeBidColor, int gradientLevel)
+		{
+			return indicator.EGFootprintLadder(input, offsetPixels, ladderGapPixels, largeTradeGapPixels, ticksPerRow, maxLadderRows, showDeltaBar, deltaBarMaxWidth, deltaBarHeightPixels, deltaBarOpacity, showPoc, pocLineHeightPixels, showImbalance, imbalanceRatio, ladderWidth, textFontFamily, fontSize, rowOpacity, extendLadderBar, showLargeTrades, maxLargeTradesPerRow, largeTradeThreshold, largeTradeDotDiameterPixels, largeTradeDotSpacingPixels, sellRowColor, buyRowColor, neutralRowColor, rowTextColor, pocLineColor, imbalanceColor, largeAskColor, largeBidColor, gradientLevel);
+		}
+	}
+}
+
+namespace NinjaTrader.NinjaScript.Strategies
+{
+	public partial class Strategy : NinjaTrader.Gui.NinjaScript.StrategyRenderBase
+	{
+		public Indicators.EducatedGambling.EGFootprintLadder EGFootprintLadder(int offsetPixels, int ladderGapPixels, int largeTradeGapPixels, int ticksPerRow, int maxLadderRows, bool showDeltaBar, int deltaBarMaxWidth, int deltaBarHeightPixels, int deltaBarOpacity, bool showPoc, int pocLineHeightPixels, bool showImbalance, double imbalanceRatio, int ladderWidth, string textFontFamily, double fontSize, int rowOpacity, bool extendLadderBar, bool showLargeTrades, int maxLargeTradesPerRow, int largeTradeThreshold, int largeTradeDotDiameterPixels, int largeTradeDotSpacingPixels, Brush sellRowColor, Brush buyRowColor, Brush neutralRowColor, Brush rowTextColor, Brush pocLineColor, Brush imbalanceColor, Brush largeAskColor, Brush largeBidColor, int gradientLevel)
+		{
+			return indicator.EGFootprintLadder(Input, offsetPixels, ladderGapPixels, largeTradeGapPixels, ticksPerRow, maxLadderRows, showDeltaBar, deltaBarMaxWidth, deltaBarHeightPixels, deltaBarOpacity, showPoc, pocLineHeightPixels, showImbalance, imbalanceRatio, ladderWidth, textFontFamily, fontSize, rowOpacity, extendLadderBar, showLargeTrades, maxLargeTradesPerRow, largeTradeThreshold, largeTradeDotDiameterPixels, largeTradeDotSpacingPixels, sellRowColor, buyRowColor, neutralRowColor, rowTextColor, pocLineColor, imbalanceColor, largeAskColor, largeBidColor, gradientLevel);
+		}
+
+		public Indicators.EducatedGambling.EGFootprintLadder EGFootprintLadder(ISeries<double> input , int offsetPixels, int ladderGapPixels, int largeTradeGapPixels, int ticksPerRow, int maxLadderRows, bool showDeltaBar, int deltaBarMaxWidth, int deltaBarHeightPixels, int deltaBarOpacity, bool showPoc, int pocLineHeightPixels, bool showImbalance, double imbalanceRatio, int ladderWidth, string textFontFamily, double fontSize, int rowOpacity, bool extendLadderBar, bool showLargeTrades, int maxLargeTradesPerRow, int largeTradeThreshold, int largeTradeDotDiameterPixels, int largeTradeDotSpacingPixels, Brush sellRowColor, Brush buyRowColor, Brush neutralRowColor, Brush rowTextColor, Brush pocLineColor, Brush imbalanceColor, Brush largeAskColor, Brush largeBidColor, int gradientLevel)
+		{
+			return indicator.EGFootprintLadder(input, offsetPixels, ladderGapPixels, largeTradeGapPixels, ticksPerRow, maxLadderRows, showDeltaBar, deltaBarMaxWidth, deltaBarHeightPixels, deltaBarOpacity, showPoc, pocLineHeightPixels, showImbalance, imbalanceRatio, ladderWidth, textFontFamily, fontSize, rowOpacity, extendLadderBar, showLargeTrades, maxLargeTradesPerRow, largeTradeThreshold, largeTradeDotDiameterPixels, largeTradeDotSpacingPixels, sellRowColor, buyRowColor, neutralRowColor, rowTextColor, pocLineColor, imbalanceColor, largeAskColor, largeBidColor, gradientLevel);
+		}
+	}
+}
+
+#endregion
