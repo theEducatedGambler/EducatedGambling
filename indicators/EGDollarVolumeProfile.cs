@@ -74,7 +74,8 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
                 GradientLevel = 5;
                 PriceGroupingPoints = 5.75;
                 BarLengthPixels = 250;
-                BarHeightPixels = 20;
+                BarHeightMode = EGDollarVolumeProfileBarHeightMode.Dynamic;
+                FixedBarHeightPixels = 20;
                 MaxLevelsToShow = 40;
                 WallSpacingPixels = 4;
                 TextSpacingPixels = 12;
@@ -313,10 +314,10 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
                 .OrderByDescending(l => l.Item3 - l.Item2).Take(MaxLargestVolumeLevelsPerSide).Select(l => l.Item1));
 
             float margin = WallSpacingPixels;
-            float rowHeight = BarHeightPixels;
             float priceBoxWidth = 74f;
             float gap = TextSpacingPixels;
             float labelWidth = 150f;
+            double groupSize = PriceGroupingPoints > 0 ? PriceGroupingPoints : Instrument.MasterInstrument.TickSize;
 
             float priceBoxRight = ChartPanel.X + ChartPanel.W - margin;
             float priceBoxLeft = priceBoxRight - priceBoxWidth;
@@ -334,6 +335,17 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
                 double pct = totalUsd > 0 ? Math.Abs(netUsd) / totalUsd * 100.0 : 0.0;
 
                 float y = chartScale.GetYByValue(price);
+                float rowHeight;
+                if (BarHeightMode == EGDollarVolumeProfileBarHeightMode.Fixed)
+                {
+                    rowHeight = FixedBarHeightPixels;
+                }
+                else
+                {
+                    float rowTop = chartScale.GetYByValue(price + groupSize / 2.0);
+                    float rowBottom = chartScale.GetYByValue(price - groupSize / 2.0);
+                    rowHeight = Math.Max(Math.Abs(rowBottom - rowTop), 6f);
+                }
                 float width = (float)(Math.Abs(netUsd) / maxAbsNet * BarLengthPixels);
                 bool isDominantLevel = pct >= DominantLevelThreshold;
                 bool isLargestVolumeLevel = netUsd >= 0 ? topBuyLevels.Contains(price) : topSellLevels.Contains(price);
@@ -452,28 +464,39 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
         [Display(Name = "Max Bar Length (px)", Description = "Max horizontal length in pixels for the largest bar", GroupName = "Layout", Order = 2)]
         public int BarLengthPixels { get; set; }
 
+        [XmlIgnore]
+        [Display(Name = "Bar Height Type", Description = "Dynamic sizes each row's height from Price Grouping (points) at the current chart zoom; Fixed uses a constant Fixed Bar Height (px) instead", GroupName = "Layout", Order = 3)]
+        public EGDollarVolumeProfileBarHeightMode BarHeightMode { get; set; }
+
+        [Browsable(false)]
+        public string BarHeightModeSerializable
+        {
+            get { return BarHeightMode.ToString(); }
+            set { BarHeightMode = (EGDollarVolumeProfileBarHeightMode)Enum.Parse(typeof(EGDollarVolumeProfileBarHeightMode), value); }
+        }
+
         [NinjaScriptProperty]
         [Range(4, 100)]
-        [Display(Name = "Bar Height (px)", Description = "Height in pixels of each price level's row", GroupName = "Layout", Order = 3)]
-        public int BarHeightPixels { get; set; }
+        [Display(Name = "Fixed Bar Height (px)", Description = "Height in pixels of each price level's row when Bar Height Type is Fixed", GroupName = "Layout", Order = 4)]
+        public int FixedBarHeightPixels { get; set; }
 
         [NinjaScriptProperty]
         [Range(0, 500)]
-        [Display(Name = "Max Levels Shown (0 = all)", Description = "Max number of price levels rendered, ranked by net dollar volume; 0 shows all", GroupName = "Layout", Order = 4)]
+        [Display(Name = "Max Levels Shown (0 = all)", Description = "Max number of price levels rendered, ranked by net dollar volume; 0 shows all", GroupName = "Layout", Order = 5)]
         public int MaxLevelsToShow { get; set; }
 
         [NinjaScriptProperty]
         [Range(0, 200)]
-        [Display(Name = "Chart Wall Spacing (px)", Description = "Horizontal gap in pixels between the ladder and the chart's right/scale edge", GroupName = "Layout", Order = 5)]
+        [Display(Name = "Chart Wall Spacing (px)", Description = "Horizontal gap in pixels between the ladder and the chart's right/scale edge", GroupName = "Layout", Order = 6)]
         public int WallSpacingPixels { get; set; }
 
         [NinjaScriptProperty]
         [Range(0, 200)]
-        [Display(Name = "Price/Volume Text Spacing (px)", Description = "Horizontal gap in pixels between the price box and the volume bar/text", GroupName = "Layout", Order = 6)]
+        [Display(Name = "Price/Volume Text Spacing (px)", Description = "Horizontal gap in pixels between the price box and the volume bar/text", GroupName = "Layout", Order = 7)]
         public int TextSpacingPixels { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show USD Suffix", Description = "Append \"USD\" to each dollar volume label", GroupName = "Layout", Order = 7)]
+        [Display(Name = "Show USD Suffix", Description = "Append \"USD\" to each dollar volume label", GroupName = "Layout", Order = 8)]
         public bool ShowUsdSuffix { get; set; }
 
         // ----- Bar Fill -----
@@ -746,6 +769,8 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
 
     public enum EGDollarVolumeProfileSessionFilter { RTH, ETH }
 
+    public enum EGDollarVolumeProfileBarHeightMode { Dynamic, Fixed }
+
     public enum EGDollarVolumeProfileBarFillMode { Solid, Gradient }
 
     public enum EGDollarVolumeProfileExtendMode { Line, Bar }
@@ -794,3 +819,60 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
         public override StandardValuesCollection GetStandardValues(ITypeDescriptorContext c) => Values;
     }
 }
+
+#region NinjaScript generated code. Neither change nor remove.
+
+namespace NinjaTrader.NinjaScript.Indicators
+{
+	public partial class Indicator : NinjaTrader.Gui.NinjaScript.IndicatorRenderBase
+	{
+		private EducatedGambling.EGDollarVolumeProfile[] cacheEGDollarVolumeProfile;
+		public EducatedGambling.EGDollarVolumeProfile EGDollarVolumeProfile(double priceGroupingPoints, int barLengthPixels, int fixedBarHeightPixels, int maxLevelsToShow, int wallSpacingPixels, int textSpacingPixels, bool showUsdSuffix, int gradientLevel, bool highlightDominantLevels, int dominantLevelThreshold, bool extendDominantLevel, int lineWidthPixels, DashStyleHelper lineStyle, bool highlightLargestVolumeLevels, int maxLargestVolumeLevelsPerSide, bool extendLargestVolumeLevel, int largestVolumeLineWidthPixels, DashStyleHelper largestVolumeLineStyle, string priceFontFamily, double priceFontSize, string volumeFontFamily, double volumeFontSize, System.Windows.Media.Brush buyColor, System.Windows.Media.Brush sellColor, System.Windows.Media.Brush dominantColor, System.Windows.Media.Brush extendedDominantLineBarColor, System.Windows.Media.Brush largestVolumeColor, System.Windows.Media.Brush largestBuyVolumeExtendedLineBarColor, System.Windows.Media.Brush largestSellVolumeExtendedLineBarColor, System.Windows.Media.Brush priceTextColor, System.Windows.Media.Brush volumeTextColor)
+		{
+			return EGDollarVolumeProfile(Input, priceGroupingPoints, barLengthPixels, fixedBarHeightPixels, maxLevelsToShow, wallSpacingPixels, textSpacingPixels, showUsdSuffix, gradientLevel, highlightDominantLevels, dominantLevelThreshold, extendDominantLevel, lineWidthPixels, lineStyle, highlightLargestVolumeLevels, maxLargestVolumeLevelsPerSide, extendLargestVolumeLevel, largestVolumeLineWidthPixels, largestVolumeLineStyle, priceFontFamily, priceFontSize, volumeFontFamily, volumeFontSize, buyColor, sellColor, dominantColor, extendedDominantLineBarColor, largestVolumeColor, largestBuyVolumeExtendedLineBarColor, largestSellVolumeExtendedLineBarColor, priceTextColor, volumeTextColor);
+		}
+
+		public EducatedGambling.EGDollarVolumeProfile EGDollarVolumeProfile(ISeries<double> input, double priceGroupingPoints, int barLengthPixels, int fixedBarHeightPixels, int maxLevelsToShow, int wallSpacingPixels, int textSpacingPixels, bool showUsdSuffix, int gradientLevel, bool highlightDominantLevels, int dominantLevelThreshold, bool extendDominantLevel, int lineWidthPixels, DashStyleHelper lineStyle, bool highlightLargestVolumeLevels, int maxLargestVolumeLevelsPerSide, bool extendLargestVolumeLevel, int largestVolumeLineWidthPixels, DashStyleHelper largestVolumeLineStyle, string priceFontFamily, double priceFontSize, string volumeFontFamily, double volumeFontSize, System.Windows.Media.Brush buyColor, System.Windows.Media.Brush sellColor, System.Windows.Media.Brush dominantColor, System.Windows.Media.Brush extendedDominantLineBarColor, System.Windows.Media.Brush largestVolumeColor, System.Windows.Media.Brush largestBuyVolumeExtendedLineBarColor, System.Windows.Media.Brush largestSellVolumeExtendedLineBarColor, System.Windows.Media.Brush priceTextColor, System.Windows.Media.Brush volumeTextColor)
+		{
+			if (cacheEGDollarVolumeProfile != null)
+				for (int idx = 0; idx < cacheEGDollarVolumeProfile.Length; idx++)
+					if (cacheEGDollarVolumeProfile[idx] != null && cacheEGDollarVolumeProfile[idx].PriceGroupingPoints == priceGroupingPoints && cacheEGDollarVolumeProfile[idx].BarLengthPixels == barLengthPixels && cacheEGDollarVolumeProfile[idx].FixedBarHeightPixels == fixedBarHeightPixels && cacheEGDollarVolumeProfile[idx].MaxLevelsToShow == maxLevelsToShow && cacheEGDollarVolumeProfile[idx].WallSpacingPixels == wallSpacingPixels && cacheEGDollarVolumeProfile[idx].TextSpacingPixels == textSpacingPixels && cacheEGDollarVolumeProfile[idx].ShowUsdSuffix == showUsdSuffix && cacheEGDollarVolumeProfile[idx].GradientLevel == gradientLevel && cacheEGDollarVolumeProfile[idx].HighlightDominantLevels == highlightDominantLevels && cacheEGDollarVolumeProfile[idx].DominantLevelThreshold == dominantLevelThreshold && cacheEGDollarVolumeProfile[idx].ExtendDominantLevel == extendDominantLevel && cacheEGDollarVolumeProfile[idx].LineWidthPixels == lineWidthPixels && cacheEGDollarVolumeProfile[idx].LineStyle == lineStyle && cacheEGDollarVolumeProfile[idx].HighlightLargestVolumeLevels == highlightLargestVolumeLevels && cacheEGDollarVolumeProfile[idx].MaxLargestVolumeLevelsPerSide == maxLargestVolumeLevelsPerSide && cacheEGDollarVolumeProfile[idx].ExtendLargestVolumeLevel == extendLargestVolumeLevel && cacheEGDollarVolumeProfile[idx].LargestVolumeLineWidthPixels == largestVolumeLineWidthPixels && cacheEGDollarVolumeProfile[idx].LargestVolumeLineStyle == largestVolumeLineStyle && cacheEGDollarVolumeProfile[idx].PriceFontFamily == priceFontFamily && cacheEGDollarVolumeProfile[idx].PriceFontSize == priceFontSize && cacheEGDollarVolumeProfile[idx].VolumeFontFamily == volumeFontFamily && cacheEGDollarVolumeProfile[idx].VolumeFontSize == volumeFontSize && cacheEGDollarVolumeProfile[idx].BuyColor == buyColor && cacheEGDollarVolumeProfile[idx].SellColor == sellColor && cacheEGDollarVolumeProfile[idx].DominantColor == dominantColor && cacheEGDollarVolumeProfile[idx].ExtendedDominantLineBarColor == extendedDominantLineBarColor && cacheEGDollarVolumeProfile[idx].LargestVolumeColor == largestVolumeColor && cacheEGDollarVolumeProfile[idx].LargestBuyVolumeExtendedLineBarColor == largestBuyVolumeExtendedLineBarColor && cacheEGDollarVolumeProfile[idx].LargestSellVolumeExtendedLineBarColor == largestSellVolumeExtendedLineBarColor && cacheEGDollarVolumeProfile[idx].PriceTextColor == priceTextColor && cacheEGDollarVolumeProfile[idx].VolumeTextColor == volumeTextColor && cacheEGDollarVolumeProfile[idx].EqualsInput(input))
+						return cacheEGDollarVolumeProfile[idx];
+			return CacheIndicator<EducatedGambling.EGDollarVolumeProfile>(new EducatedGambling.EGDollarVolumeProfile(){ PriceGroupingPoints = priceGroupingPoints, BarLengthPixels = barLengthPixels, FixedBarHeightPixels = fixedBarHeightPixels, MaxLevelsToShow = maxLevelsToShow, WallSpacingPixels = wallSpacingPixels, TextSpacingPixels = textSpacingPixels, ShowUsdSuffix = showUsdSuffix, GradientLevel = gradientLevel, HighlightDominantLevels = highlightDominantLevels, DominantLevelThreshold = dominantLevelThreshold, ExtendDominantLevel = extendDominantLevel, LineWidthPixels = lineWidthPixels, LineStyle = lineStyle, HighlightLargestVolumeLevels = highlightLargestVolumeLevels, MaxLargestVolumeLevelsPerSide = maxLargestVolumeLevelsPerSide, ExtendLargestVolumeLevel = extendLargestVolumeLevel, LargestVolumeLineWidthPixels = largestVolumeLineWidthPixels, LargestVolumeLineStyle = largestVolumeLineStyle, PriceFontFamily = priceFontFamily, PriceFontSize = priceFontSize, VolumeFontFamily = volumeFontFamily, VolumeFontSize = volumeFontSize, BuyColor = buyColor, SellColor = sellColor, DominantColor = dominantColor, ExtendedDominantLineBarColor = extendedDominantLineBarColor, LargestVolumeColor = largestVolumeColor, LargestBuyVolumeExtendedLineBarColor = largestBuyVolumeExtendedLineBarColor, LargestSellVolumeExtendedLineBarColor = largestSellVolumeExtendedLineBarColor, PriceTextColor = priceTextColor, VolumeTextColor = volumeTextColor }, input, ref cacheEGDollarVolumeProfile);
+		}
+	}
+}
+
+namespace NinjaTrader.NinjaScript.MarketAnalyzerColumns
+{
+	public partial class MarketAnalyzerColumn : MarketAnalyzerColumnBase
+	{
+		public Indicators.EducatedGambling.EGDollarVolumeProfile EGDollarVolumeProfile(double priceGroupingPoints, int barLengthPixels, int fixedBarHeightPixels, int maxLevelsToShow, int wallSpacingPixels, int textSpacingPixels, bool showUsdSuffix, int gradientLevel, bool highlightDominantLevels, int dominantLevelThreshold, bool extendDominantLevel, int lineWidthPixels, DashStyleHelper lineStyle, bool highlightLargestVolumeLevels, int maxLargestVolumeLevelsPerSide, bool extendLargestVolumeLevel, int largestVolumeLineWidthPixels, DashStyleHelper largestVolumeLineStyle, string priceFontFamily, double priceFontSize, string volumeFontFamily, double volumeFontSize, System.Windows.Media.Brush buyColor, System.Windows.Media.Brush sellColor, System.Windows.Media.Brush dominantColor, System.Windows.Media.Brush extendedDominantLineBarColor, System.Windows.Media.Brush largestVolumeColor, System.Windows.Media.Brush largestBuyVolumeExtendedLineBarColor, System.Windows.Media.Brush largestSellVolumeExtendedLineBarColor, System.Windows.Media.Brush priceTextColor, System.Windows.Media.Brush volumeTextColor)
+		{
+			return indicator.EGDollarVolumeProfile(Input, priceGroupingPoints, barLengthPixels, fixedBarHeightPixels, maxLevelsToShow, wallSpacingPixels, textSpacingPixels, showUsdSuffix, gradientLevel, highlightDominantLevels, dominantLevelThreshold, extendDominantLevel, lineWidthPixels, lineStyle, highlightLargestVolumeLevels, maxLargestVolumeLevelsPerSide, extendLargestVolumeLevel, largestVolumeLineWidthPixels, largestVolumeLineStyle, priceFontFamily, priceFontSize, volumeFontFamily, volumeFontSize, buyColor, sellColor, dominantColor, extendedDominantLineBarColor, largestVolumeColor, largestBuyVolumeExtendedLineBarColor, largestSellVolumeExtendedLineBarColor, priceTextColor, volumeTextColor);
+		}
+
+		public Indicators.EducatedGambling.EGDollarVolumeProfile EGDollarVolumeProfile(ISeries<double> input , double priceGroupingPoints, int barLengthPixels, int fixedBarHeightPixels, int maxLevelsToShow, int wallSpacingPixels, int textSpacingPixels, bool showUsdSuffix, int gradientLevel, bool highlightDominantLevels, int dominantLevelThreshold, bool extendDominantLevel, int lineWidthPixels, DashStyleHelper lineStyle, bool highlightLargestVolumeLevels, int maxLargestVolumeLevelsPerSide, bool extendLargestVolumeLevel, int largestVolumeLineWidthPixels, DashStyleHelper largestVolumeLineStyle, string priceFontFamily, double priceFontSize, string volumeFontFamily, double volumeFontSize, System.Windows.Media.Brush buyColor, System.Windows.Media.Brush sellColor, System.Windows.Media.Brush dominantColor, System.Windows.Media.Brush extendedDominantLineBarColor, System.Windows.Media.Brush largestVolumeColor, System.Windows.Media.Brush largestBuyVolumeExtendedLineBarColor, System.Windows.Media.Brush largestSellVolumeExtendedLineBarColor, System.Windows.Media.Brush priceTextColor, System.Windows.Media.Brush volumeTextColor)
+		{
+			return indicator.EGDollarVolumeProfile(input, priceGroupingPoints, barLengthPixels, fixedBarHeightPixels, maxLevelsToShow, wallSpacingPixels, textSpacingPixels, showUsdSuffix, gradientLevel, highlightDominantLevels, dominantLevelThreshold, extendDominantLevel, lineWidthPixels, lineStyle, highlightLargestVolumeLevels, maxLargestVolumeLevelsPerSide, extendLargestVolumeLevel, largestVolumeLineWidthPixels, largestVolumeLineStyle, priceFontFamily, priceFontSize, volumeFontFamily, volumeFontSize, buyColor, sellColor, dominantColor, extendedDominantLineBarColor, largestVolumeColor, largestBuyVolumeExtendedLineBarColor, largestSellVolumeExtendedLineBarColor, priceTextColor, volumeTextColor);
+		}
+	}
+}
+
+namespace NinjaTrader.NinjaScript.Strategies
+{
+	public partial class Strategy : NinjaTrader.Gui.NinjaScript.StrategyRenderBase
+	{
+		public Indicators.EducatedGambling.EGDollarVolumeProfile EGDollarVolumeProfile(double priceGroupingPoints, int barLengthPixels, int fixedBarHeightPixels, int maxLevelsToShow, int wallSpacingPixels, int textSpacingPixels, bool showUsdSuffix, int gradientLevel, bool highlightDominantLevels, int dominantLevelThreshold, bool extendDominantLevel, int lineWidthPixels, DashStyleHelper lineStyle, bool highlightLargestVolumeLevels, int maxLargestVolumeLevelsPerSide, bool extendLargestVolumeLevel, int largestVolumeLineWidthPixels, DashStyleHelper largestVolumeLineStyle, string priceFontFamily, double priceFontSize, string volumeFontFamily, double volumeFontSize, System.Windows.Media.Brush buyColor, System.Windows.Media.Brush sellColor, System.Windows.Media.Brush dominantColor, System.Windows.Media.Brush extendedDominantLineBarColor, System.Windows.Media.Brush largestVolumeColor, System.Windows.Media.Brush largestBuyVolumeExtendedLineBarColor, System.Windows.Media.Brush largestSellVolumeExtendedLineBarColor, System.Windows.Media.Brush priceTextColor, System.Windows.Media.Brush volumeTextColor)
+		{
+			return indicator.EGDollarVolumeProfile(Input, priceGroupingPoints, barLengthPixels, fixedBarHeightPixels, maxLevelsToShow, wallSpacingPixels, textSpacingPixels, showUsdSuffix, gradientLevel, highlightDominantLevels, dominantLevelThreshold, extendDominantLevel, lineWidthPixels, lineStyle, highlightLargestVolumeLevels, maxLargestVolumeLevelsPerSide, extendLargestVolumeLevel, largestVolumeLineWidthPixels, largestVolumeLineStyle, priceFontFamily, priceFontSize, volumeFontFamily, volumeFontSize, buyColor, sellColor, dominantColor, extendedDominantLineBarColor, largestVolumeColor, largestBuyVolumeExtendedLineBarColor, largestSellVolumeExtendedLineBarColor, priceTextColor, volumeTextColor);
+		}
+
+		public Indicators.EducatedGambling.EGDollarVolumeProfile EGDollarVolumeProfile(ISeries<double> input , double priceGroupingPoints, int barLengthPixels, int fixedBarHeightPixels, int maxLevelsToShow, int wallSpacingPixels, int textSpacingPixels, bool showUsdSuffix, int gradientLevel, bool highlightDominantLevels, int dominantLevelThreshold, bool extendDominantLevel, int lineWidthPixels, DashStyleHelper lineStyle, bool highlightLargestVolumeLevels, int maxLargestVolumeLevelsPerSide, bool extendLargestVolumeLevel, int largestVolumeLineWidthPixels, DashStyleHelper largestVolumeLineStyle, string priceFontFamily, double priceFontSize, string volumeFontFamily, double volumeFontSize, System.Windows.Media.Brush buyColor, System.Windows.Media.Brush sellColor, System.Windows.Media.Brush dominantColor, System.Windows.Media.Brush extendedDominantLineBarColor, System.Windows.Media.Brush largestVolumeColor, System.Windows.Media.Brush largestBuyVolumeExtendedLineBarColor, System.Windows.Media.Brush largestSellVolumeExtendedLineBarColor, System.Windows.Media.Brush priceTextColor, System.Windows.Media.Brush volumeTextColor)
+		{
+			return indicator.EGDollarVolumeProfile(input, priceGroupingPoints, barLengthPixels, fixedBarHeightPixels, maxLevelsToShow, wallSpacingPixels, textSpacingPixels, showUsdSuffix, gradientLevel, highlightDominantLevels, dominantLevelThreshold, extendDominantLevel, lineWidthPixels, lineStyle, highlightLargestVolumeLevels, maxLargestVolumeLevelsPerSide, extendLargestVolumeLevel, largestVolumeLineWidthPixels, largestVolumeLineStyle, priceFontFamily, priceFontSize, volumeFontFamily, volumeFontSize, buyColor, sellColor, dominantColor, extendedDominantLineBarColor, largestVolumeColor, largestBuyVolumeExtendedLineBarColor, largestSellVolumeExtendedLineBarColor, priceTextColor, volumeTextColor);
+		}
+	}
+}
+
+#endregion
