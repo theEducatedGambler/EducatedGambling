@@ -21,6 +21,7 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
     [CategoryOrder("Ladder", 4)]
     [CategoryOrder("Large Trades", 5)]
     [CategoryOrder("Colors", 6)]
+    [CategoryOrder("Data Summary", 7)]
     public class EGFootprintLadder : Indicator
     {
         // Built on hidden Last/Bid/Ask 1-tick data series (documented pattern elsewhere in this
@@ -63,6 +64,13 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
         }
         private readonly Dictionary<double, List<LargeTradeEvent>> largeTradesByPrice = new Dictionary<double, List<LargeTradeEvent>>();
         private double maxLargeTradeSizeThisBar;
+
+        // Rolling per-closed-bar totals, capped at TrendLookbackBars, used to compare the
+        // current (still-forming) bar's live delta/volume/range against the recent average for
+        // the Data Summary trend triangles.
+        private readonly Queue<double> deltaHistory = new Queue<double>();
+        private readonly Queue<double> volumeHistory = new Queue<double>();
+        private readonly Queue<double> rangeHistory = new Queue<double>();
 
         protected override void OnStateChange()
         {
@@ -118,6 +126,17 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
                 DeltaColorFill = EGFootprintLadderColorFillMode.Solid;
                 LadderColorFill = EGFootprintLadderColorFillMode.Solid;
                 GradientLevel = 5;
+
+                ShowDataSummary = true;
+                DataSummaryGapPixels = 10;
+                ShowTotalDelta = true;
+                ShowStrength = true;
+                ShowTrendingDelta = true;
+                ShowTrendingVolume = true;
+                ShowTrendingRange = true;
+                TrendLookbackBars = 20;
+                TrendDivisorPercent = 20.0;
+                MaxTriangles = 5;
             }
             else if (State == State.Configure)
             {
@@ -136,6 +155,9 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
                 maxAbsDeltaThisBar = 0;
                 largeTradesByPrice.Clear();
                 maxLargeTradeSizeThisBar = 0;
+                deltaHistory.Clear();
+                volumeHistory.Clear();
+                rangeHistory.Clear();
             }
         }
 
@@ -169,6 +191,28 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
 
                 if (targetBar != accumBarIndex)
                 {
+                    // Push the bar that's ending into the rolling trend history before clearing
+                    // it - accumBarIndex < 0 means this is the very first bar seen, nothing to
+                    // push yet. Highs[0][0]/Lows[0][0] (explicit primary-series index, same
+                    // pattern as Times[0][0] above) give that bar's range.
+                    if (accumBarIndex >= 0)
+                    {
+                        double endedBidTotal = bidByPrice.Values.Sum();
+                        double endedAskTotal = askByPrice.Values.Sum();
+
+                        deltaHistory.Enqueue(endedAskTotal - endedBidTotal);
+                        if (deltaHistory.Count > TrendLookbackBars)
+                            deltaHistory.Dequeue();
+
+                        volumeHistory.Enqueue(endedAskTotal + endedBidTotal);
+                        if (volumeHistory.Count > TrendLookbackBars)
+                            volumeHistory.Dequeue();
+
+                        rangeHistory.Enqueue(Highs[0][0] - Lows[0][0]);
+                        if (rangeHistory.Count > TrendLookbackBars)
+                            rangeHistory.Dequeue();
+                    }
+
                     accumBarIndex = targetBar;
                     bidByPrice.Clear();
                     askByPrice.Clear();
@@ -251,6 +295,33 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
                 maxLargeTradeSizeThisBar = size;
         }
 
+        // Compares current against the average of history (recent closed bars). Percent
+        // difference is converted to a triangle count via TrendDivisorPercent (one triangle
+        // per that many percent above/below average), capped at maxTriangles. isUp reflects
+        // the sign of the difference; 0 triangles means "not enough history yet" (avg == 0 or
+        // no history) or the difference hasn't reached one full triangle step.
+        private static int CountTrendTriangles(double current, Queue<double> history, double divisorPercent, int maxTriangles, out bool isUp)
+        {
+            isUp = false;
+            if (history.Count == 0)
+                return 0;
+
+            double avg = history.Average();
+            if (avg == 0)
+                return 0;
+
+            double percentDiff = (current - avg) / Math.Abs(avg) * 100.0;
+            isUp = percentDiff > 0;
+
+            int triangles = (int)(Math.Abs(percentDiff) / divisorPercent);
+            return Math.Min(triangles, maxTriangles);
+        }
+
+        private static string BuildTrendGlyphs(int triangleCount, bool isUp)
+        {
+            return triangleCount > 0 ? new string(isUp ? '▲' : '▼', triangleCount) : "-";
+        }
+
         protected override void OnRender(ChartControl chartControl, ChartScale chartScale)
         {
             if (Bars == null || ChartControl == null || IsInHitTest)
@@ -287,7 +358,8 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
             // render loop below (Ladder/Delta Bar Opacity as a ceiling, scaled down further by
             // Gradient Level + relative strength when the corresponding *Color Fill is Gradient)
             // rather than fixed once here - same brushes are reused for both the ladder row and
-            // the delta bar, which need different per-row opacity values.
+            // the delta bar, which need different per-row opacity values. They're also reused
+            // (with opacity reset to full) for the Data Summary trend triangles below.
             float gradientFade = GradientLevel / 10f;
 
             SharpDX.DirectWrite.TextAlignment dxTextAlign;
@@ -343,12 +415,18 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
                 maxRowVolume = Math.Max(maxVolume, 0);
             }
 
+            // Tracks the bottom-most rendered row's Y so the Data Summary box can anchor itself
+            // just below the ladder regardless of how many/which price levels rendered this bar.
+            float maxRowBottomY = float.MinValue;
+
             foreach (double price in prices)
             {
                 float y = chartScale.GetYByValue(price);
                 float rowTop = chartScale.GetYByValue(price + groupSize / 2.0);
                 float rowBottom = chartScale.GetYByValue(price - groupSize / 2.0);
                 float rowHeight = Math.Max(Math.Abs(rowBottom - rowTop), 6f);
+
+                maxRowBottomY = Math.Max(maxRowBottomY, y + rowHeight / 2f);
 
                 double bid;
                 bidByPrice.TryGetValue(price, out bid);
@@ -465,6 +543,117 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
 
                 SharpDX.RectangleF pocRect = new SharpDX.RectangleF(pocX, pocY - PocLineHeightPixels / 2f, pocLineLength, PocLineHeightPixels);
                 RenderTarget.FillRectangle(pocRect, pocBrush);
+            }
+
+            bool anyDataSummaryLine = ShowTotalDelta || ShowStrength || ShowTrendingDelta || ShowTrendingVolume || ShowTrendingRange;
+            if (ShowDataSummary && anyDataSummaryLine && prices.Count > 0)
+            {
+                // Reset opacity to full - the main loop above left these at whatever
+                // per-row/per-bar opacity was last computed for the final price level.
+                buyBrush.Opacity = 1f;
+                sellBrush.Opacity = 1f;
+
+                // Left-aligned regardless of Ladder Text Align, which only governs the
+                // bid/ask/delta ladder rows above.
+                SharpDX.DirectWrite.TextFormat summaryTextFormat = new SharpDX.DirectWrite.TextFormat(
+                    Core.Globals.DirectWriteFactory,
+                    TextFontFamily,
+                    SharpDX.DirectWrite.FontWeight.Normal,
+                    SharpDX.DirectWrite.FontStyle.Normal,
+                    (float)FontSize)
+                {
+                    TextAlignment = SharpDX.DirectWrite.TextAlignment.Leading,
+                    ParagraphAlignment = SharpDX.DirectWrite.ParagraphAlignment.Center
+                };
+
+                double curBidTotal = bidByPrice.Values.Sum();
+                double curAskTotal = askByPrice.Values.Sum();
+                double curDelta = curAskTotal - curBidTotal;
+                double curVolume = curAskTotal + curBidTotal;
+                double curRange = Highs[0][0] - Lows[0][0];
+
+                float lineHeight = (float)FontSize + 6f;
+                float rowY = maxRowBottomY + DataSummaryGapPixels;
+
+                if (ShowTotalDelta)
+                {
+                    string totalDeltaText = "Total Δ " + (curDelta > 0 ? "+" + curDelta.ToString("0") : curDelta.ToString("0"));
+                    SharpDX.RectangleF rect = new SharpDX.RectangleF(ladderLeft, rowY, ladderRectWidth, lineHeight);
+                    RenderTarget.DrawText(totalDeltaText, summaryTextFormat, rect, textBrush, SharpDX.Direct2D1.DrawTextOptions.None);
+                    rowY += lineHeight;
+                }
+
+                if (ShowStrength)
+                {
+                    double totalVol = curBidTotal + curAskTotal;
+                    double buyPct = totalVol > 0 ? curAskTotal / totalVol * 100.0 : 50.0;
+                    string strengthText;
+                    SharpDX.Direct2D1.Brush strengthBrush;
+                    if (curAskTotal > curBidTotal)
+                    {
+                        strengthText = "Buy Strength " + buyPct.ToString("0") + "%";
+                        strengthBrush = buyBrush;
+                    }
+                    else if (curBidTotal > curAskTotal)
+                    {
+                        strengthText = "Sell Strength " + (100.0 - buyPct).ToString("0") + "%";
+                        strengthBrush = sellBrush;
+                    }
+                    else
+                    {
+                        strengthText = "Strength 50%";
+                        strengthBrush = neutralBrush;
+                    }
+                    SharpDX.RectangleF rect = new SharpDX.RectangleF(ladderLeft, rowY, ladderRectWidth, lineHeight);
+                    RenderTarget.DrawText(strengthText, summaryTextFormat, rect, strengthBrush, SharpDX.Direct2D1.DrawTextOptions.None);
+                    rowY += lineHeight;
+                }
+
+                // Trending Delta has a natural buy/sell direction, so it borrows the same
+                // blue/red convention as the ladder rows and delta bars. Trending Volume and
+                // Trending Range have no such direction (more/less volume or a wider/narrower
+                // bar isn't "bullish"/"bearish"), so they stay in the plain text color
+                // regardless of which way they're trending.
+                if (ShowTrendingDelta)
+                {
+                    bool deltaTrendUp;
+                    int deltaTriangles = CountTrendTriangles(curDelta, deltaHistory, TrendDivisorPercent, MaxTriangles, out deltaTrendUp);
+                    string deltaTrendText = "Trending Δ " + BuildTrendGlyphs(deltaTriangles, deltaTrendUp);
+                    SharpDX.Direct2D1.Brush deltaTrendBrush = deltaTriangles > 0 ? (deltaTrendUp ? buyBrush : sellBrush) : textBrush;
+                    SharpDX.RectangleF rect = new SharpDX.RectangleF(ladderLeft, rowY, ladderRectWidth, lineHeight);
+                    RenderTarget.DrawText(deltaTrendText, summaryTextFormat, rect, deltaTrendBrush, SharpDX.Direct2D1.DrawTextOptions.None);
+                    rowY += lineHeight;
+                }
+
+                if (ShowTrendingVolume)
+                {
+                    bool volumeTrendUp;
+                    int volumeTriangles = CountTrendTriangles(curVolume, volumeHistory, TrendDivisorPercent, MaxTriangles, out volumeTrendUp);
+                    string volumeTrendText = "Trending Vol " + BuildTrendGlyphs(volumeTriangles, volumeTrendUp);
+                    SharpDX.RectangleF rect = new SharpDX.RectangleF(ladderLeft, rowY, ladderRectWidth, lineHeight);
+                    RenderTarget.DrawText(volumeTrendText, summaryTextFormat, rect, textBrush, SharpDX.Direct2D1.DrawTextOptions.None);
+                    rowY += lineHeight;
+                }
+
+                if (ShowTrendingRange)
+                {
+                    bool rangeTrendUp;
+                    int rangeTriangles = CountTrendTriangles(curRange, rangeHistory, TrendDivisorPercent, MaxTriangles, out rangeTrendUp);
+                    string rangeTrendText = "Trending Range " + BuildTrendGlyphs(rangeTriangles, rangeTrendUp);
+                    SharpDX.RectangleF rect = new SharpDX.RectangleF(ladderLeft, rowY, ladderRectWidth, lineHeight);
+                    RenderTarget.DrawText(rangeTrendText, summaryTextFormat, rect, textBrush, SharpDX.Direct2D1.DrawTextOptions.None);
+                    rowY += lineHeight;
+                }
+
+                if (ShowTrendingDelta || ShowTrendingVolume || ShowTrendingRange)
+                {
+                    string lookbackCaptionText = string.Format(CultureInfo.InvariantCulture, "(calculated over {0} bars)", TrendLookbackBars);
+                    SharpDX.RectangleF rect = new SharpDX.RectangleF(ladderLeft, rowY, ladderRectWidth, lineHeight);
+                    RenderTarget.DrawText(lookbackCaptionText, summaryTextFormat, rect, textBrush, SharpDX.Direct2D1.DrawTextOptions.None);
+                    rowY += lineHeight;
+                }
+
+                summaryTextFormat.Dispose();
             }
 
             textFormat.Dispose();
@@ -751,6 +940,52 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
         [Display(Name = "Gradient Level", Description = "How strongly Gradient mode's opacity scales with relative strength (1 = barely varies, 10 = full range from faint to fully solid); shared by Ladder Fill and Delta Fill", GroupName = "Colors", Order = 11)]
         public int GradientLevel { get; set; }
 
+        // ----- Data Summary -----
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Data Summary", Description = "Show a Data Summary box below the ladder with the enabled data points below", GroupName = "Data Summary", Order = 1)]
+        public bool ShowDataSummary { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 100)]
+        [Display(Name = "Data Summary Gap (px)", Description = "Vertical gap between the bottom of the ladder and the Data Summary box", GroupName = "Data Summary", Order = 2)]
+        public int DataSummaryGapPixels { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Display Total Delta", Description = "Show the running total delta (ask volume - bid volume) for the current bar", GroupName = "Data Summary", Order = 3)]
+        public bool ShowTotalDelta { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Display Bid/Ask Strength", Description = "Show which side (buy/sell) leads this bar's volume and by what percentage", GroupName = "Data Summary", Order = 4)]
+        public bool ShowStrength { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Display Trending Delta", Description = "Show triangles comparing this bar's live delta to the average delta of the last Trend Lookback Bars", GroupName = "Data Summary", Order = 5)]
+        public bool ShowTrendingDelta { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Display Trending Volume", Description = "Show triangles comparing this bar's live volume to the average volume of the last Trend Lookback Bars", GroupName = "Data Summary", Order = 6)]
+        public bool ShowTrendingVolume { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Display Trending Range", Description = "Show triangles comparing this bar's high-low range so far to the average range of the last Trend Lookback Bars", GroupName = "Data Summary", Order = 7)]
+        public bool ShowTrendingRange { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(2, 500)]
+        [Display(Name = "Trend Lookback Bars", Description = "Number of recent closed bars averaged for the Trending Delta/Volume/Range comparisons", GroupName = "Data Summary", Order = 8)]
+        public int TrendLookbackBars { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1.0, 100.0)]
+        [Display(Name = "Trend Divisor (%)", Description = "Percent difference from the lookback average required to add one trend triangle; e.g. 20 means each 20% above/below average adds a triangle", GroupName = "Data Summary", Order = 9)]
+        public double TrendDivisorPercent { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 20)]
+        [Display(Name = "Max Triangles", Description = "Maximum number of trend triangles rendered for any Trending line, regardless of how large the percent difference is", GroupName = "Data Summary", Order = 10)]
+        public int MaxTriangles { get; set; }
+
         #endregion
     }
 
@@ -812,18 +1047,18 @@ namespace NinjaTrader.NinjaScript.Indicators
 	public partial class Indicator : NinjaTrader.Gui.NinjaScript.IndicatorRenderBase
 	{
 		private EducatedGambling.EGFootprintLadder[] cacheEGFootprintLadder;
-		public EducatedGambling.EGFootprintLadder EGFootprintLadder(int offsetPixels, int ladderGapPixels, int largeTradeGapPixels, int ticksPerRow, int maxLadderRows, bool showDeltaBar, int deltaBarMaxWidth, int deltaBarHeightPixels, int deltaBarOpacity, bool showPoc, int pocLineHeightPixels, bool showImbalance, double imbalanceRatio, int ladderWidth, string textFontFamily, double fontSize, int rowOpacity, bool extendLadderBar, bool showLargeTrades, int maxLargeTradesPerRow, int largeTradeThreshold, int largeTradeDotDiameterPixels, int largeTradeDotSpacingPixels, Brush sellRowColor, Brush buyRowColor, Brush neutralRowColor, Brush rowTextColor, Brush pocLineColor, Brush imbalanceColor, Brush largeAskColor, Brush largeBidColor, int gradientLevel)
+		public EducatedGambling.EGFootprintLadder EGFootprintLadder(int offsetPixels, int ladderGapPixels, int largeTradeGapPixels, int ticksPerRow, int maxLadderRows, bool showDeltaBar, int deltaBarMaxWidth, int deltaBarHeightPixels, int deltaBarOpacity, bool showPoc, int pocLineHeightPixels, bool showImbalance, double imbalanceRatio, int ladderWidth, string textFontFamily, double fontSize, int rowOpacity, bool extendLadderBar, bool showLargeTrades, int maxLargeTradesPerRow, int largeTradeThreshold, int largeTradeDotDiameterPixels, int largeTradeDotSpacingPixels, Brush sellRowColor, Brush buyRowColor, Brush neutralRowColor, Brush rowTextColor, Brush pocLineColor, Brush imbalanceColor, Brush largeAskColor, Brush largeBidColor, int gradientLevel, bool showDataSummary, int dataSummaryGapPixels, bool showTotalDelta, bool showStrength, bool showTrendingDelta, bool showTrendingVolume, bool showTrendingRange, int trendLookbackBars, double trendDivisorPercent, int maxTriangles)
 		{
-			return EGFootprintLadder(Input, offsetPixels, ladderGapPixels, largeTradeGapPixels, ticksPerRow, maxLadderRows, showDeltaBar, deltaBarMaxWidth, deltaBarHeightPixels, deltaBarOpacity, showPoc, pocLineHeightPixels, showImbalance, imbalanceRatio, ladderWidth, textFontFamily, fontSize, rowOpacity, extendLadderBar, showLargeTrades, maxLargeTradesPerRow, largeTradeThreshold, largeTradeDotDiameterPixels, largeTradeDotSpacingPixels, sellRowColor, buyRowColor, neutralRowColor, rowTextColor, pocLineColor, imbalanceColor, largeAskColor, largeBidColor, gradientLevel);
+			return EGFootprintLadder(Input, offsetPixels, ladderGapPixels, largeTradeGapPixels, ticksPerRow, maxLadderRows, showDeltaBar, deltaBarMaxWidth, deltaBarHeightPixels, deltaBarOpacity, showPoc, pocLineHeightPixels, showImbalance, imbalanceRatio, ladderWidth, textFontFamily, fontSize, rowOpacity, extendLadderBar, showLargeTrades, maxLargeTradesPerRow, largeTradeThreshold, largeTradeDotDiameterPixels, largeTradeDotSpacingPixels, sellRowColor, buyRowColor, neutralRowColor, rowTextColor, pocLineColor, imbalanceColor, largeAskColor, largeBidColor, gradientLevel, showDataSummary, dataSummaryGapPixels, showTotalDelta, showStrength, showTrendingDelta, showTrendingVolume, showTrendingRange, trendLookbackBars, trendDivisorPercent, maxTriangles);
 		}
 
-		public EducatedGambling.EGFootprintLadder EGFootprintLadder(ISeries<double> input, int offsetPixels, int ladderGapPixels, int largeTradeGapPixels, int ticksPerRow, int maxLadderRows, bool showDeltaBar, int deltaBarMaxWidth, int deltaBarHeightPixels, int deltaBarOpacity, bool showPoc, int pocLineHeightPixels, bool showImbalance, double imbalanceRatio, int ladderWidth, string textFontFamily, double fontSize, int rowOpacity, bool extendLadderBar, bool showLargeTrades, int maxLargeTradesPerRow, int largeTradeThreshold, int largeTradeDotDiameterPixels, int largeTradeDotSpacingPixels, Brush sellRowColor, Brush buyRowColor, Brush neutralRowColor, Brush rowTextColor, Brush pocLineColor, Brush imbalanceColor, Brush largeAskColor, Brush largeBidColor, int gradientLevel)
+		public EducatedGambling.EGFootprintLadder EGFootprintLadder(ISeries<double> input, int offsetPixels, int ladderGapPixels, int largeTradeGapPixels, int ticksPerRow, int maxLadderRows, bool showDeltaBar, int deltaBarMaxWidth, int deltaBarHeightPixels, int deltaBarOpacity, bool showPoc, int pocLineHeightPixels, bool showImbalance, double imbalanceRatio, int ladderWidth, string textFontFamily, double fontSize, int rowOpacity, bool extendLadderBar, bool showLargeTrades, int maxLargeTradesPerRow, int largeTradeThreshold, int largeTradeDotDiameterPixels, int largeTradeDotSpacingPixels, Brush sellRowColor, Brush buyRowColor, Brush neutralRowColor, Brush rowTextColor, Brush pocLineColor, Brush imbalanceColor, Brush largeAskColor, Brush largeBidColor, int gradientLevel, bool showDataSummary, int dataSummaryGapPixels, bool showTotalDelta, bool showStrength, bool showTrendingDelta, bool showTrendingVolume, bool showTrendingRange, int trendLookbackBars, double trendDivisorPercent, int maxTriangles)
 		{
 			if (cacheEGFootprintLadder != null)
 				for (int idx = 0; idx < cacheEGFootprintLadder.Length; idx++)
-					if (cacheEGFootprintLadder[idx] != null && cacheEGFootprintLadder[idx].OffsetPixels == offsetPixels && cacheEGFootprintLadder[idx].LadderGapPixels == ladderGapPixels && cacheEGFootprintLadder[idx].LargeTradeGapPixels == largeTradeGapPixels && cacheEGFootprintLadder[idx].TicksPerRow == ticksPerRow && cacheEGFootprintLadder[idx].MaxLadderRows == maxLadderRows && cacheEGFootprintLadder[idx].ShowDeltaBar == showDeltaBar && cacheEGFootprintLadder[idx].DeltaBarMaxWidth == deltaBarMaxWidth && cacheEGFootprintLadder[idx].DeltaBarHeightPixels == deltaBarHeightPixels && cacheEGFootprintLadder[idx].DeltaBarOpacity == deltaBarOpacity && cacheEGFootprintLadder[idx].ShowPoc == showPoc && cacheEGFootprintLadder[idx].PocLineHeightPixels == pocLineHeightPixels && cacheEGFootprintLadder[idx].ShowImbalance == showImbalance && cacheEGFootprintLadder[idx].ImbalanceRatio == imbalanceRatio && cacheEGFootprintLadder[idx].LadderWidth == ladderWidth && cacheEGFootprintLadder[idx].TextFontFamily == textFontFamily && cacheEGFootprintLadder[idx].FontSize == fontSize && cacheEGFootprintLadder[idx].RowOpacity == rowOpacity && cacheEGFootprintLadder[idx].ExtendLadderBar == extendLadderBar && cacheEGFootprintLadder[idx].ShowLargeTrades == showLargeTrades && cacheEGFootprintLadder[idx].MaxLargeTradesPerRow == maxLargeTradesPerRow && cacheEGFootprintLadder[idx].LargeTradeThreshold == largeTradeThreshold && cacheEGFootprintLadder[idx].LargeTradeDotDiameterPixels == largeTradeDotDiameterPixels && cacheEGFootprintLadder[idx].LargeTradeDotSpacingPixels == largeTradeDotSpacingPixels && cacheEGFootprintLadder[idx].SellRowColor == sellRowColor && cacheEGFootprintLadder[idx].BuyRowColor == buyRowColor && cacheEGFootprintLadder[idx].NeutralRowColor == neutralRowColor && cacheEGFootprintLadder[idx].RowTextColor == rowTextColor && cacheEGFootprintLadder[idx].PocLineColor == pocLineColor && cacheEGFootprintLadder[idx].ImbalanceColor == imbalanceColor && cacheEGFootprintLadder[idx].LargeAskColor == largeAskColor && cacheEGFootprintLadder[idx].LargeBidColor == largeBidColor && cacheEGFootprintLadder[idx].GradientLevel == gradientLevel && cacheEGFootprintLadder[idx].EqualsInput(input))
+					if (cacheEGFootprintLadder[idx] != null && cacheEGFootprintLadder[idx].OffsetPixels == offsetPixels && cacheEGFootprintLadder[idx].LadderGapPixels == ladderGapPixels && cacheEGFootprintLadder[idx].LargeTradeGapPixels == largeTradeGapPixels && cacheEGFootprintLadder[idx].TicksPerRow == ticksPerRow && cacheEGFootprintLadder[idx].MaxLadderRows == maxLadderRows && cacheEGFootprintLadder[idx].ShowDeltaBar == showDeltaBar && cacheEGFootprintLadder[idx].DeltaBarMaxWidth == deltaBarMaxWidth && cacheEGFootprintLadder[idx].DeltaBarHeightPixels == deltaBarHeightPixels && cacheEGFootprintLadder[idx].DeltaBarOpacity == deltaBarOpacity && cacheEGFootprintLadder[idx].ShowPoc == showPoc && cacheEGFootprintLadder[idx].PocLineHeightPixels == pocLineHeightPixels && cacheEGFootprintLadder[idx].ShowImbalance == showImbalance && cacheEGFootprintLadder[idx].ImbalanceRatio == imbalanceRatio && cacheEGFootprintLadder[idx].LadderWidth == ladderWidth && cacheEGFootprintLadder[idx].TextFontFamily == textFontFamily && cacheEGFootprintLadder[idx].FontSize == fontSize && cacheEGFootprintLadder[idx].RowOpacity == rowOpacity && cacheEGFootprintLadder[idx].ExtendLadderBar == extendLadderBar && cacheEGFootprintLadder[idx].ShowLargeTrades == showLargeTrades && cacheEGFootprintLadder[idx].MaxLargeTradesPerRow == maxLargeTradesPerRow && cacheEGFootprintLadder[idx].LargeTradeThreshold == largeTradeThreshold && cacheEGFootprintLadder[idx].LargeTradeDotDiameterPixels == largeTradeDotDiameterPixels && cacheEGFootprintLadder[idx].LargeTradeDotSpacingPixels == largeTradeDotSpacingPixels && cacheEGFootprintLadder[idx].SellRowColor == sellRowColor && cacheEGFootprintLadder[idx].BuyRowColor == buyRowColor && cacheEGFootprintLadder[idx].NeutralRowColor == neutralRowColor && cacheEGFootprintLadder[idx].RowTextColor == rowTextColor && cacheEGFootprintLadder[idx].PocLineColor == pocLineColor && cacheEGFootprintLadder[idx].ImbalanceColor == imbalanceColor && cacheEGFootprintLadder[idx].LargeAskColor == largeAskColor && cacheEGFootprintLadder[idx].LargeBidColor == largeBidColor && cacheEGFootprintLadder[idx].GradientLevel == gradientLevel && cacheEGFootprintLadder[idx].ShowDataSummary == showDataSummary && cacheEGFootprintLadder[idx].DataSummaryGapPixels == dataSummaryGapPixels && cacheEGFootprintLadder[idx].ShowTotalDelta == showTotalDelta && cacheEGFootprintLadder[idx].ShowStrength == showStrength && cacheEGFootprintLadder[idx].ShowTrendingDelta == showTrendingDelta && cacheEGFootprintLadder[idx].ShowTrendingVolume == showTrendingVolume && cacheEGFootprintLadder[idx].ShowTrendingRange == showTrendingRange && cacheEGFootprintLadder[idx].TrendLookbackBars == trendLookbackBars && cacheEGFootprintLadder[idx].TrendDivisorPercent == trendDivisorPercent && cacheEGFootprintLadder[idx].MaxTriangles == maxTriangles && cacheEGFootprintLadder[idx].EqualsInput(input))
 						return cacheEGFootprintLadder[idx];
-			return CacheIndicator<EducatedGambling.EGFootprintLadder>(new EducatedGambling.EGFootprintLadder(){ OffsetPixels = offsetPixels, LadderGapPixels = ladderGapPixels, LargeTradeGapPixels = largeTradeGapPixels, TicksPerRow = ticksPerRow, MaxLadderRows = maxLadderRows, ShowDeltaBar = showDeltaBar, DeltaBarMaxWidth = deltaBarMaxWidth, DeltaBarHeightPixels = deltaBarHeightPixels, DeltaBarOpacity = deltaBarOpacity, ShowPoc = showPoc, PocLineHeightPixels = pocLineHeightPixels, ShowImbalance = showImbalance, ImbalanceRatio = imbalanceRatio, LadderWidth = ladderWidth, TextFontFamily = textFontFamily, FontSize = fontSize, RowOpacity = rowOpacity, ExtendLadderBar = extendLadderBar, ShowLargeTrades = showLargeTrades, MaxLargeTradesPerRow = maxLargeTradesPerRow, LargeTradeThreshold = largeTradeThreshold, LargeTradeDotDiameterPixels = largeTradeDotDiameterPixels, LargeTradeDotSpacingPixels = largeTradeDotSpacingPixels, SellRowColor = sellRowColor, BuyRowColor = buyRowColor, NeutralRowColor = neutralRowColor, RowTextColor = rowTextColor, PocLineColor = pocLineColor, ImbalanceColor = imbalanceColor, LargeAskColor = largeAskColor, LargeBidColor = largeBidColor, GradientLevel = gradientLevel }, input, ref cacheEGFootprintLadder);
+			return CacheIndicator<EducatedGambling.EGFootprintLadder>(new EducatedGambling.EGFootprintLadder(){ OffsetPixels = offsetPixels, LadderGapPixels = ladderGapPixels, LargeTradeGapPixels = largeTradeGapPixels, TicksPerRow = ticksPerRow, MaxLadderRows = maxLadderRows, ShowDeltaBar = showDeltaBar, DeltaBarMaxWidth = deltaBarMaxWidth, DeltaBarHeightPixels = deltaBarHeightPixels, DeltaBarOpacity = deltaBarOpacity, ShowPoc = showPoc, PocLineHeightPixels = pocLineHeightPixels, ShowImbalance = showImbalance, ImbalanceRatio = imbalanceRatio, LadderWidth = ladderWidth, TextFontFamily = textFontFamily, FontSize = fontSize, RowOpacity = rowOpacity, ExtendLadderBar = extendLadderBar, ShowLargeTrades = showLargeTrades, MaxLargeTradesPerRow = maxLargeTradesPerRow, LargeTradeThreshold = largeTradeThreshold, LargeTradeDotDiameterPixels = largeTradeDotDiameterPixels, LargeTradeDotSpacingPixels = largeTradeDotSpacingPixels, SellRowColor = sellRowColor, BuyRowColor = buyRowColor, NeutralRowColor = neutralRowColor, RowTextColor = rowTextColor, PocLineColor = pocLineColor, ImbalanceColor = imbalanceColor, LargeAskColor = largeAskColor, LargeBidColor = largeBidColor, GradientLevel = gradientLevel, ShowDataSummary = showDataSummary, DataSummaryGapPixels = dataSummaryGapPixels, ShowTotalDelta = showTotalDelta, ShowStrength = showStrength, ShowTrendingDelta = showTrendingDelta, ShowTrendingVolume = showTrendingVolume, ShowTrendingRange = showTrendingRange, TrendLookbackBars = trendLookbackBars, TrendDivisorPercent = trendDivisorPercent, MaxTriangles = maxTriangles }, input, ref cacheEGFootprintLadder);
 		}
 	}
 }
@@ -832,14 +1067,14 @@ namespace NinjaTrader.NinjaScript.MarketAnalyzerColumns
 {
 	public partial class MarketAnalyzerColumn : MarketAnalyzerColumnBase
 	{
-		public Indicators.EducatedGambling.EGFootprintLadder EGFootprintLadder(int offsetPixels, int ladderGapPixels, int largeTradeGapPixels, int ticksPerRow, int maxLadderRows, bool showDeltaBar, int deltaBarMaxWidth, int deltaBarHeightPixels, int deltaBarOpacity, bool showPoc, int pocLineHeightPixels, bool showImbalance, double imbalanceRatio, int ladderWidth, string textFontFamily, double fontSize, int rowOpacity, bool extendLadderBar, bool showLargeTrades, int maxLargeTradesPerRow, int largeTradeThreshold, int largeTradeDotDiameterPixels, int largeTradeDotSpacingPixels, Brush sellRowColor, Brush buyRowColor, Brush neutralRowColor, Brush rowTextColor, Brush pocLineColor, Brush imbalanceColor, Brush largeAskColor, Brush largeBidColor, int gradientLevel)
+		public Indicators.EducatedGambling.EGFootprintLadder EGFootprintLadder(int offsetPixels, int ladderGapPixels, int largeTradeGapPixels, int ticksPerRow, int maxLadderRows, bool showDeltaBar, int deltaBarMaxWidth, int deltaBarHeightPixels, int deltaBarOpacity, bool showPoc, int pocLineHeightPixels, bool showImbalance, double imbalanceRatio, int ladderWidth, string textFontFamily, double fontSize, int rowOpacity, bool extendLadderBar, bool showLargeTrades, int maxLargeTradesPerRow, int largeTradeThreshold, int largeTradeDotDiameterPixels, int largeTradeDotSpacingPixels, Brush sellRowColor, Brush buyRowColor, Brush neutralRowColor, Brush rowTextColor, Brush pocLineColor, Brush imbalanceColor, Brush largeAskColor, Brush largeBidColor, int gradientLevel, bool showDataSummary, int dataSummaryGapPixels, bool showTotalDelta, bool showStrength, bool showTrendingDelta, bool showTrendingVolume, bool showTrendingRange, int trendLookbackBars, double trendDivisorPercent, int maxTriangles)
 		{
-			return indicator.EGFootprintLadder(Input, offsetPixels, ladderGapPixels, largeTradeGapPixels, ticksPerRow, maxLadderRows, showDeltaBar, deltaBarMaxWidth, deltaBarHeightPixels, deltaBarOpacity, showPoc, pocLineHeightPixels, showImbalance, imbalanceRatio, ladderWidth, textFontFamily, fontSize, rowOpacity, extendLadderBar, showLargeTrades, maxLargeTradesPerRow, largeTradeThreshold, largeTradeDotDiameterPixels, largeTradeDotSpacingPixels, sellRowColor, buyRowColor, neutralRowColor, rowTextColor, pocLineColor, imbalanceColor, largeAskColor, largeBidColor, gradientLevel);
+			return indicator.EGFootprintLadder(Input, offsetPixels, ladderGapPixels, largeTradeGapPixels, ticksPerRow, maxLadderRows, showDeltaBar, deltaBarMaxWidth, deltaBarHeightPixels, deltaBarOpacity, showPoc, pocLineHeightPixels, showImbalance, imbalanceRatio, ladderWidth, textFontFamily, fontSize, rowOpacity, extendLadderBar, showLargeTrades, maxLargeTradesPerRow, largeTradeThreshold, largeTradeDotDiameterPixels, largeTradeDotSpacingPixels, sellRowColor, buyRowColor, neutralRowColor, rowTextColor, pocLineColor, imbalanceColor, largeAskColor, largeBidColor, gradientLevel, showDataSummary, dataSummaryGapPixels, showTotalDelta, showStrength, showTrendingDelta, showTrendingVolume, showTrendingRange, trendLookbackBars, trendDivisorPercent, maxTriangles);
 		}
 
-		public Indicators.EducatedGambling.EGFootprintLadder EGFootprintLadder(ISeries<double> input , int offsetPixels, int ladderGapPixels, int largeTradeGapPixels, int ticksPerRow, int maxLadderRows, bool showDeltaBar, int deltaBarMaxWidth, int deltaBarHeightPixels, int deltaBarOpacity, bool showPoc, int pocLineHeightPixels, bool showImbalance, double imbalanceRatio, int ladderWidth, string textFontFamily, double fontSize, int rowOpacity, bool extendLadderBar, bool showLargeTrades, int maxLargeTradesPerRow, int largeTradeThreshold, int largeTradeDotDiameterPixels, int largeTradeDotSpacingPixels, Brush sellRowColor, Brush buyRowColor, Brush neutralRowColor, Brush rowTextColor, Brush pocLineColor, Brush imbalanceColor, Brush largeAskColor, Brush largeBidColor, int gradientLevel)
+		public Indicators.EducatedGambling.EGFootprintLadder EGFootprintLadder(ISeries<double> input , int offsetPixels, int ladderGapPixels, int largeTradeGapPixels, int ticksPerRow, int maxLadderRows, bool showDeltaBar, int deltaBarMaxWidth, int deltaBarHeightPixels, int deltaBarOpacity, bool showPoc, int pocLineHeightPixels, bool showImbalance, double imbalanceRatio, int ladderWidth, string textFontFamily, double fontSize, int rowOpacity, bool extendLadderBar, bool showLargeTrades, int maxLargeTradesPerRow, int largeTradeThreshold, int largeTradeDotDiameterPixels, int largeTradeDotSpacingPixels, Brush sellRowColor, Brush buyRowColor, Brush neutralRowColor, Brush rowTextColor, Brush pocLineColor, Brush imbalanceColor, Brush largeAskColor, Brush largeBidColor, int gradientLevel, bool showDataSummary, int dataSummaryGapPixels, bool showTotalDelta, bool showStrength, bool showTrendingDelta, bool showTrendingVolume, bool showTrendingRange, int trendLookbackBars, double trendDivisorPercent, int maxTriangles)
 		{
-			return indicator.EGFootprintLadder(input, offsetPixels, ladderGapPixels, largeTradeGapPixels, ticksPerRow, maxLadderRows, showDeltaBar, deltaBarMaxWidth, deltaBarHeightPixels, deltaBarOpacity, showPoc, pocLineHeightPixels, showImbalance, imbalanceRatio, ladderWidth, textFontFamily, fontSize, rowOpacity, extendLadderBar, showLargeTrades, maxLargeTradesPerRow, largeTradeThreshold, largeTradeDotDiameterPixels, largeTradeDotSpacingPixels, sellRowColor, buyRowColor, neutralRowColor, rowTextColor, pocLineColor, imbalanceColor, largeAskColor, largeBidColor, gradientLevel);
+			return indicator.EGFootprintLadder(input, offsetPixels, ladderGapPixels, largeTradeGapPixels, ticksPerRow, maxLadderRows, showDeltaBar, deltaBarMaxWidth, deltaBarHeightPixels, deltaBarOpacity, showPoc, pocLineHeightPixels, showImbalance, imbalanceRatio, ladderWidth, textFontFamily, fontSize, rowOpacity, extendLadderBar, showLargeTrades, maxLargeTradesPerRow, largeTradeThreshold, largeTradeDotDiameterPixels, largeTradeDotSpacingPixels, sellRowColor, buyRowColor, neutralRowColor, rowTextColor, pocLineColor, imbalanceColor, largeAskColor, largeBidColor, gradientLevel, showDataSummary, dataSummaryGapPixels, showTotalDelta, showStrength, showTrendingDelta, showTrendingVolume, showTrendingRange, trendLookbackBars, trendDivisorPercent, maxTriangles);
 		}
 	}
 }
@@ -848,14 +1083,14 @@ namespace NinjaTrader.NinjaScript.Strategies
 {
 	public partial class Strategy : NinjaTrader.Gui.NinjaScript.StrategyRenderBase
 	{
-		public Indicators.EducatedGambling.EGFootprintLadder EGFootprintLadder(int offsetPixels, int ladderGapPixels, int largeTradeGapPixels, int ticksPerRow, int maxLadderRows, bool showDeltaBar, int deltaBarMaxWidth, int deltaBarHeightPixels, int deltaBarOpacity, bool showPoc, int pocLineHeightPixels, bool showImbalance, double imbalanceRatio, int ladderWidth, string textFontFamily, double fontSize, int rowOpacity, bool extendLadderBar, bool showLargeTrades, int maxLargeTradesPerRow, int largeTradeThreshold, int largeTradeDotDiameterPixels, int largeTradeDotSpacingPixels, Brush sellRowColor, Brush buyRowColor, Brush neutralRowColor, Brush rowTextColor, Brush pocLineColor, Brush imbalanceColor, Brush largeAskColor, Brush largeBidColor, int gradientLevel)
+		public Indicators.EducatedGambling.EGFootprintLadder EGFootprintLadder(int offsetPixels, int ladderGapPixels, int largeTradeGapPixels, int ticksPerRow, int maxLadderRows, bool showDeltaBar, int deltaBarMaxWidth, int deltaBarHeightPixels, int deltaBarOpacity, bool showPoc, int pocLineHeightPixels, bool showImbalance, double imbalanceRatio, int ladderWidth, string textFontFamily, double fontSize, int rowOpacity, bool extendLadderBar, bool showLargeTrades, int maxLargeTradesPerRow, int largeTradeThreshold, int largeTradeDotDiameterPixels, int largeTradeDotSpacingPixels, Brush sellRowColor, Brush buyRowColor, Brush neutralRowColor, Brush rowTextColor, Brush pocLineColor, Brush imbalanceColor, Brush largeAskColor, Brush largeBidColor, int gradientLevel, bool showDataSummary, int dataSummaryGapPixels, bool showTotalDelta, bool showStrength, bool showTrendingDelta, bool showTrendingVolume, bool showTrendingRange, int trendLookbackBars, double trendDivisorPercent, int maxTriangles)
 		{
-			return indicator.EGFootprintLadder(Input, offsetPixels, ladderGapPixels, largeTradeGapPixels, ticksPerRow, maxLadderRows, showDeltaBar, deltaBarMaxWidth, deltaBarHeightPixels, deltaBarOpacity, showPoc, pocLineHeightPixels, showImbalance, imbalanceRatio, ladderWidth, textFontFamily, fontSize, rowOpacity, extendLadderBar, showLargeTrades, maxLargeTradesPerRow, largeTradeThreshold, largeTradeDotDiameterPixels, largeTradeDotSpacingPixels, sellRowColor, buyRowColor, neutralRowColor, rowTextColor, pocLineColor, imbalanceColor, largeAskColor, largeBidColor, gradientLevel);
+			return indicator.EGFootprintLadder(Input, offsetPixels, ladderGapPixels, largeTradeGapPixels, ticksPerRow, maxLadderRows, showDeltaBar, deltaBarMaxWidth, deltaBarHeightPixels, deltaBarOpacity, showPoc, pocLineHeightPixels, showImbalance, imbalanceRatio, ladderWidth, textFontFamily, fontSize, rowOpacity, extendLadderBar, showLargeTrades, maxLargeTradesPerRow, largeTradeThreshold, largeTradeDotDiameterPixels, largeTradeDotSpacingPixels, sellRowColor, buyRowColor, neutralRowColor, rowTextColor, pocLineColor, imbalanceColor, largeAskColor, largeBidColor, gradientLevel, showDataSummary, dataSummaryGapPixels, showTotalDelta, showStrength, showTrendingDelta, showTrendingVolume, showTrendingRange, trendLookbackBars, trendDivisorPercent, maxTriangles);
 		}
 
-		public Indicators.EducatedGambling.EGFootprintLadder EGFootprintLadder(ISeries<double> input , int offsetPixels, int ladderGapPixels, int largeTradeGapPixels, int ticksPerRow, int maxLadderRows, bool showDeltaBar, int deltaBarMaxWidth, int deltaBarHeightPixels, int deltaBarOpacity, bool showPoc, int pocLineHeightPixels, bool showImbalance, double imbalanceRatio, int ladderWidth, string textFontFamily, double fontSize, int rowOpacity, bool extendLadderBar, bool showLargeTrades, int maxLargeTradesPerRow, int largeTradeThreshold, int largeTradeDotDiameterPixels, int largeTradeDotSpacingPixels, Brush sellRowColor, Brush buyRowColor, Brush neutralRowColor, Brush rowTextColor, Brush pocLineColor, Brush imbalanceColor, Brush largeAskColor, Brush largeBidColor, int gradientLevel)
+		public Indicators.EducatedGambling.EGFootprintLadder EGFootprintLadder(ISeries<double> input , int offsetPixels, int ladderGapPixels, int largeTradeGapPixels, int ticksPerRow, int maxLadderRows, bool showDeltaBar, int deltaBarMaxWidth, int deltaBarHeightPixels, int deltaBarOpacity, bool showPoc, int pocLineHeightPixels, bool showImbalance, double imbalanceRatio, int ladderWidth, string textFontFamily, double fontSize, int rowOpacity, bool extendLadderBar, bool showLargeTrades, int maxLargeTradesPerRow, int largeTradeThreshold, int largeTradeDotDiameterPixels, int largeTradeDotSpacingPixels, Brush sellRowColor, Brush buyRowColor, Brush neutralRowColor, Brush rowTextColor, Brush pocLineColor, Brush imbalanceColor, Brush largeAskColor, Brush largeBidColor, int gradientLevel, bool showDataSummary, int dataSummaryGapPixels, bool showTotalDelta, bool showStrength, bool showTrendingDelta, bool showTrendingVolume, bool showTrendingRange, int trendLookbackBars, double trendDivisorPercent, int maxTriangles)
 		{
-			return indicator.EGFootprintLadder(input, offsetPixels, ladderGapPixels, largeTradeGapPixels, ticksPerRow, maxLadderRows, showDeltaBar, deltaBarMaxWidth, deltaBarHeightPixels, deltaBarOpacity, showPoc, pocLineHeightPixels, showImbalance, imbalanceRatio, ladderWidth, textFontFamily, fontSize, rowOpacity, extendLadderBar, showLargeTrades, maxLargeTradesPerRow, largeTradeThreshold, largeTradeDotDiameterPixels, largeTradeDotSpacingPixels, sellRowColor, buyRowColor, neutralRowColor, rowTextColor, pocLineColor, imbalanceColor, largeAskColor, largeBidColor, gradientLevel);
+			return indicator.EGFootprintLadder(input, offsetPixels, ladderGapPixels, largeTradeGapPixels, ticksPerRow, maxLadderRows, showDeltaBar, deltaBarMaxWidth, deltaBarHeightPixels, deltaBarOpacity, showPoc, pocLineHeightPixels, showImbalance, imbalanceRatio, ladderWidth, textFontFamily, fontSize, rowOpacity, extendLadderBar, showLargeTrades, maxLargeTradesPerRow, largeTradeThreshold, largeTradeDotDiameterPixels, largeTradeDotSpacingPixels, sellRowColor, buyRowColor, neutralRowColor, rowTextColor, pocLineColor, imbalanceColor, largeAskColor, largeBidColor, gradientLevel, showDataSummary, dataSummaryGapPixels, showTotalDelta, showStrength, showTrendingDelta, showTrendingVolume, showTrendingRange, trendLookbackBars, trendDivisorPercent, maxTriangles);
 		}
 	}
 }
