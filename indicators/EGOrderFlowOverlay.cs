@@ -18,7 +18,7 @@ using SharpDX.Direct2D1;
 namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
 {
     public enum EGOrderFlowOverlayLineAlignment { Left, Center, Right }
-    public enum EGOrderFlowOverlayLargeTradePrintMode { Lines, Bubbles }
+    public enum EGOrderFlowOverlayLargeTradePrintMode { Lines, BubblesFilled, BubblesUnfilled }
 
     [CategoryOrder("Standard Trade Detector", 1)]
     [CategoryOrder("Large Trade Detection", 2)]
@@ -52,7 +52,7 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
         {
             if (State == State.SetDefaults)
             {
-                Description = "Marks individual trade prints on the chart at their exact price, colored by buy/sell side and scaled in opacity by relative size within the bar. Large trades get their own color and can render as bubbles instead of lines. Uses a hidden 1-tick data series — no Tick Replay required.";
+                Description = "Marks individual trade prints on the chart at their exact price, colored by buy/sell side and scaled in opacity by relative size within the bar. Standard trades can optionally extend rightward by strength with a fading tail. Large trades get their own color and can render as filled or unfilled bubbles instead of lines. Uses a hidden 1-tick data series — no Tick Replay required.";
                 Name = "EGOrderFlowOverlay";
                 Calculate = Calculate.OnBarClose;
                 IsOverlay = true;
@@ -67,14 +67,18 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
                 Alignment = EGOrderFlowOverlayLineAlignment.Left;
                 SequenceMinOpacity = 0.35;
                 StrengthMinOpacity = 0.35;
+                ExtendByStrength = false;
+                MaxExtendLengthBars = 5;
 
                 EnableLargeTradeDetection = true;
                 LargeTradeThreshold = 30;
                 LargeSellColor = Brushes.Red;
                 LargeBuyColor = Brushes.Lime;
                 LargeTradePrintMode = EGOrderFlowOverlayLargeTradePrintMode.Lines;
-                BubbleRadius = 6;
+                MaxBubbleSize = 14;
+                BubbleBorderWidth = 2;
                 LargeSizeMinOpacity = 0.35;
+                PrintForward = false;
             }
             else if (State == State.Configure)
             {
@@ -218,7 +222,7 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
             }
         }
 
-        private void DrawTradeLine(float x, float y, SharpDX.Direct2D1.Brush brush, float lengthPixels)
+        private void DrawTradeLine(float x, float y, SharpDX.Direct2D1.Brush brush, float lengthPixels, float widthPixels)
         {
             float xStart, xEnd;
             switch (Alignment)
@@ -238,7 +242,56 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
                     break;
             }
 
-            RenderTarget.DrawLine(new SharpDX.Vector2(xStart, y), new SharpDX.Vector2(xEnd, y), brush, (float)LineWidth);
+            RenderTarget.DrawLine(new SharpDX.Vector2(xStart, y), new SharpDX.Vector2(xEnd, y), brush, widthPixels);
+        }
+
+        // Extend By Strength: the line always extends rightward from the trade's price point
+        // (direction is fixed, not controlled by Alignment) with length scaled by trade.Strength —
+        // Line Length (Bars) becomes the length AT full strength (the biggest standard trade in
+        // the bar); weaker trades draw shorter. It also fades from the trade's already-computed
+        // Strength/Sequence opacity (startAlpha) at the origin down to fully transparent at the
+        // tip, instead of one flat opacity across the whole line the way the non-extended mode
+        // renders.
+        //
+        // This approximates the fade as a series of short segments with linearly decreasing
+        // opacity (mutating one brush's Opacity per segment, same pattern the large-trade
+        // rendering already uses) rather than a true Direct2D linear gradient brush — the NT8-
+        // exposed RenderTarget doesn't surface CreateGradientStopCollection (confirmed via
+        // CS1061 on a real compile), so this sticks to APIs already proven to work in this file.
+        private const int ExtendedFadeSegments = 10;
+
+        // Fixed floor for large-trade bubble size (see OnRender) — not exposed as a property.
+        // Having this alongside a separate user-facing "Max Bubble Size" as a min/max pair read
+        // as two conflicting bubble-size controls in the Properties dialog, so only the ceiling
+        // is configurable; the floor stays small and constant.
+        private const float MinBubbleRadiusPixels = 2f;
+
+        private void DrawExtendedFadeLine(float x, float y, System.Windows.Media.Color baseColor, byte startAlpha, float lengthPixels, float widthPixels)
+        {
+            System.Windows.Media.SolidColorBrush wpfBrush = new System.Windows.Media.SolidColorBrush(
+                System.Windows.Media.Color.FromArgb(255, baseColor.R, baseColor.G, baseColor.B));
+
+            SharpDX.Direct2D1.Brush dxBrush = wpfBrush.ToDxBrush(RenderTarget);
+            try
+            {
+                float startOpacityFraction = startAlpha / 255f;
+                float segmentLength = lengthPixels / ExtendedFadeSegments;
+
+                for (int seg = 0; seg < ExtendedFadeSegments; seg++)
+                {
+                    float fadeT = (float)seg / ExtendedFadeSegments;
+                    dxBrush.Opacity = startOpacityFraction * (1f - fadeT);
+
+                    float segStartX = x + seg * segmentLength;
+                    float segEndX = segStartX + segmentLength;
+                    RenderTarget.DrawLine(new SharpDX.Vector2(segStartX, y), new SharpDX.Vector2(segEndX, y), dxBrush, widthPixels);
+                }
+            }
+            finally
+            {
+                dxBrush.Opacity = 1f;
+                dxBrush.Dispose();
+            }
         }
 
         // Left/Center/Right alignment needs to sit within a bar's own pixel footprint rather than
@@ -264,6 +317,28 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
                 barSpacing = 1f;
 
             float lengthPixels = LineLengthBars * barSpacing;
+            float maxExtendLengthPixels = MaxExtendLengthBars * barSpacing;
+
+            // Length already scales with bar spacing above (it's expressed in bar units), but
+            // LineWidth/MaxBubbleSize/BubbleBorderWidth are configured in raw pixels, which stay
+            // visually constant regardless of zoom. Once bars get small enough that a fixed pixel
+            // size exceeds the space available, the marker stops looking like it's reacting to
+            // further zooming. Clamp each to the current bar spacing so they shrink in lockstep
+            // once they run out of room, while still respecting the configured value as a ceiling
+            // when there's enough space (e.g. zoomed in normally).
+            float widthPixels = Math.Max(1f, Math.Min((float)LineWidth, barSpacing));
+
+            // Bubble size also rides the LargeSizeRatio gradient already driving opacity: the
+            // smallest qualifying large trade in a bar renders at MinBubbleRadiusPixels (a fixed
+            // floor, not user-facing — a separate min/max pair of properties read as conflicting
+            // when both showed up in the Properties dialog), the biggest renders at
+            // bubbleRadiusMaxPixels (Max Bubble Size), same "min + (max-min)*ratio" shape as the
+            // opacity gradient just below. Deliberately NOT clamped to bar spacing like
+            // LineWidth/lengthPixels are — a large-trade bubble is meant to stand out past the
+            // bar's own width as a callout, and capping it to barSpacing/2 was crushing every
+            // bubble into a narrow, visually-indistinguishable size range at normal zoom.
+            float bubbleRadiusMinPixels = MinBubbleRadiusPixels;
+            float bubbleRadiusMaxPixels = Math.Max(bubbleRadiusMinPixels, (float)MaxBubbleSize);
 
             System.Windows.Media.Color buyBaseColor = ((System.Windows.Media.SolidColorBrush)BuyColor).Color;
             System.Windows.Media.Color sellBaseColor = ((System.Windows.Media.SolidColorBrush)SellColor).Color;
@@ -272,55 +347,42 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
             SharpDX.Direct2D1.Brush largeSellBrush = LargeSellColor.ToDxBrush(RenderTarget);
             try
             {
+                // Print Forward: bubbles are meant to stand out as the "front" layer, so when
+                // enabled, skip large trades on this first pass and draw them in a second pass
+                // below instead — later draws land on top in this immediate-mode renderer, so
+                // that second pass puts every bubble in front of every standard trade's line,
+                // regardless of which one was detected first within a bar.
                 for (int i = 0; i < confirmedTrades.Count; i++)
                 {
                     ConfirmedTrade trade = confirmedTrades[i];
                     if (trade.BarIndex < ChartBars.FromIndex || trade.BarIndex > ChartBars.ToIndex)
+                        continue;
+                    if (PrintForward && trade.IsLarge)
                         continue;
 
                     float x = chartControl.GetXByBarIndex(ChartBars, trade.BarIndex);
                     float y = chartScale.GetYByValue(trade.Price);
 
                     if (trade.IsLarge)
-                    {
-                        SharpDX.Direct2D1.Brush dxBrush = trade.IsBuy ? largeBuyBrush : largeSellBrush;
-
-                        // Gradient: the single biggest large trade in this bar renders at full
-                        // opacity; smaller (but still-qualifying) large trades fade toward
-                        // LargeSizeMinOpacity, same formula as EGFootprintLadder's large trade dots.
-                        dxBrush.Opacity = (float)(LargeSizeMinOpacity + (1.0 - LargeSizeMinOpacity) * trade.LargeSizeRatio);
-
-                        if (LargeTradePrintMode == EGOrderFlowOverlayLargeTradePrintMode.Bubbles)
-                            RenderTarget.FillEllipse(new SharpDX.Direct2D1.Ellipse(new SharpDX.Vector2(x, y), (float)BubbleRadius, (float)BubbleRadius), dxBrush);
-                        else
-                            DrawTradeLine(x, y, dxBrush, lengthPixels);
-
-                        dxBrush.Opacity = 1f;
-                    }
+                        RenderLargeTrade(trade, x, y, largeBuyBrush, largeSellBrush, lengthPixels, widthPixels, bubbleRadiusMinPixels, bubbleRadiusMaxPixels);
                     else
+                        RenderStandardTrade(trade, x, y, buyBaseColor, sellBaseColor, lengthPixels, widthPixels, maxExtendLengthPixels);
+                }
+
+                if (PrintForward)
+                {
+                    for (int i = 0; i < confirmedTrades.Count; i++)
                     {
-                        System.Windows.Media.Color baseColor = trade.IsBuy ? buyBaseColor : sellBaseColor;
+                        ConfirmedTrade trade = confirmedTrades[i];
+                        if (!trade.IsLarge)
+                            continue;
+                        if (trade.BarIndex < ChartBars.FromIndex || trade.BarIndex > ChartBars.ToIndex)
+                            continue;
 
-                        // Strength and Sequence both drive opacity of this trade's OWN Buy/Sell
-                        // color — neither ever blends toward the Large Buy/Sell color, so a
-                        // standard trade can't visually read as an actual large trade.
-                        double strengthOpacity = StrengthMinOpacity + (1.0 - StrengthMinOpacity) * trade.Strength;
-                        double sequenceOpacity = SequenceMinOpacity + (1.0 - SequenceMinOpacity) * trade.SequenceFactor;
-                        double opacity = strengthOpacity * sequenceOpacity;
-                        byte alphaByte = (byte)(255.0 * Math.Max(0.0, Math.Min(1.0, opacity)));
+                        float x = chartControl.GetXByBarIndex(ChartBars, trade.BarIndex);
+                        float y = chartScale.GetYByValue(trade.Price);
 
-                        System.Windows.Media.SolidColorBrush wpfBrush = new System.Windows.Media.SolidColorBrush(
-                            System.Windows.Media.Color.FromArgb(alphaByte, baseColor.R, baseColor.G, baseColor.B));
-
-                        SharpDX.Direct2D1.Brush dxBrush = wpfBrush.ToDxBrush(RenderTarget);
-                        try
-                        {
-                            DrawTradeLine(x, y, dxBrush, lengthPixels);
-                        }
-                        finally
-                        {
-                            dxBrush.Dispose();
-                        }
+                        RenderLargeTrade(trade, x, y, largeBuyBrush, largeSellBrush, lengthPixels, widthPixels, bubbleRadiusMinPixels, bubbleRadiusMaxPixels);
                     }
                 }
             }
@@ -328,6 +390,71 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
             {
                 largeBuyBrush.Dispose();
                 largeSellBrush.Dispose();
+            }
+        }
+
+        private void RenderLargeTrade(ConfirmedTrade trade, float x, float y, SharpDX.Direct2D1.Brush largeBuyBrush, SharpDX.Direct2D1.Brush largeSellBrush, float lengthPixels, float widthPixels, float bubbleRadiusMinPixels, float bubbleRadiusMaxPixels)
+        {
+            SharpDX.Direct2D1.Brush dxBrush = trade.IsBuy ? largeBuyBrush : largeSellBrush;
+
+            // Gradient: the single biggest large trade in this bar renders at full opacity;
+            // smaller (but still-qualifying) large trades fade toward LargeSizeMinOpacity, same
+            // formula as EGFootprintLadder's large trade dots.
+            dxBrush.Opacity = (float)(LargeSizeMinOpacity + (1.0 - LargeSizeMinOpacity) * trade.LargeSizeRatio);
+
+            if (LargeTradePrintMode == EGOrderFlowOverlayLargeTradePrintMode.BubblesFilled ||
+                LargeTradePrintMode == EGOrderFlowOverlayLargeTradePrintMode.BubblesUnfilled)
+            {
+                // Bubble size rides the same LargeSizeRatio gradient as the opacity above:
+                // smallest qualifying large trade in the bar -> the fixed floor, biggest -> Max
+                // Bubble Size.
+                float bubbleRadiusPixels = bubbleRadiusMinPixels + (bubbleRadiusMaxPixels - bubbleRadiusMinPixels) * (float)trade.LargeSizeRatio;
+                float bubbleBorderPixels = Math.Max(1f, Math.Min((float)BubbleBorderWidth, bubbleRadiusPixels));
+
+                if (LargeTradePrintMode == EGOrderFlowOverlayLargeTradePrintMode.BubblesFilled)
+                    RenderTarget.FillEllipse(new SharpDX.Direct2D1.Ellipse(new SharpDX.Vector2(x, y), bubbleRadiusPixels, bubbleRadiusPixels), dxBrush);
+                else
+                    RenderTarget.DrawEllipse(new SharpDX.Direct2D1.Ellipse(new SharpDX.Vector2(x, y), bubbleRadiusPixels, bubbleRadiusPixels), dxBrush, bubbleBorderPixels);
+            }
+            else
+            {
+                DrawTradeLine(x, y, dxBrush, lengthPixels, widthPixels);
+            }
+
+            dxBrush.Opacity = 1f;
+        }
+
+        private void RenderStandardTrade(ConfirmedTrade trade, float x, float y, System.Windows.Media.Color buyBaseColor, System.Windows.Media.Color sellBaseColor, float lengthPixels, float widthPixels, float maxExtendLengthPixels)
+        {
+            System.Windows.Media.Color baseColor = trade.IsBuy ? buyBaseColor : sellBaseColor;
+
+            // Strength and Sequence both drive opacity of this trade's OWN Buy/Sell color —
+            // neither ever blends toward the Large Buy/Sell color, so a standard trade can't
+            // visually read as an actual large trade.
+            double strengthOpacity = StrengthMinOpacity + (1.0 - StrengthMinOpacity) * trade.Strength;
+            double sequenceOpacity = SequenceMinOpacity + (1.0 - SequenceMinOpacity) * trade.SequenceFactor;
+            double opacity = strengthOpacity * sequenceOpacity;
+            byte alphaByte = (byte)(255.0 * Math.Max(0.0, Math.Min(1.0, opacity)));
+
+            if (ExtendByStrength)
+            {
+                float extendedLengthPixels = Math.Max(2f, maxExtendLengthPixels * (float)trade.Strength);
+                DrawExtendedFadeLine(x, y, baseColor, alphaByte, extendedLengthPixels, widthPixels);
+            }
+            else
+            {
+                System.Windows.Media.SolidColorBrush wpfBrush = new System.Windows.Media.SolidColorBrush(
+                    System.Windows.Media.Color.FromArgb(alphaByte, baseColor.R, baseColor.G, baseColor.B));
+
+                SharpDX.Direct2D1.Brush dxBrush = wpfBrush.ToDxBrush(RenderTarget);
+                try
+                {
+                    DrawTradeLine(x, y, dxBrush, lengthPixels, widthPixels);
+                }
+                finally
+                {
+                    dxBrush.Dispose();
+                }
             }
         }
 
@@ -364,16 +491,16 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
 
         [NinjaScriptProperty]
         [Range(1, 20)]
-        [Display(Name = "Line Length (Bars)", Description = "Horizontal length of the line, in units of one bar's on-screen width; extension direction is controlled by Alignment", GroupName = "Standard Trade Detector", Order = 4)]
+        [Display(Name = "Line Length (Bars)", Description = "Horizontal length of the line, in units of one bar's on-screen width; extension direction is controlled by Alignment. Not used when Extend By Strength is enabled — see Max Extend Length (Bars) instead", GroupName = "Standard Trade Detector", Order = 4)]
         public int LineLengthBars { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 20)]
-        [Display(Name = "Line Width", Description = "Pixel width/thickness of the line", GroupName = "Standard Trade Detector", Order = 5)]
+        [Display(Name = "Line Width", Description = "Pixel width/thickness of the line; capped to the current on-screen bar spacing so it shrinks as bars get smaller instead of staying visually fixed", GroupName = "Standard Trade Detector", Order = 5)]
         public double LineWidth { get; set; }
 
         [XmlIgnore]
-        [Display(Name = "Alignment", Description = "Horizontal alignment of the line relative to the bar it's drawn on", GroupName = "Standard Trade Detector", Order = 6)]
+        [Display(Name = "Alignment", Description = "Horizontal alignment of the line relative to the bar it's drawn on. Ignored when Extend By Strength is enabled, which always extends rightward", GroupName = "Standard Trade Detector", Order = 6)]
         public EGOrderFlowOverlayLineAlignment Alignment { get; set; }
 
         [Browsable(false)]
@@ -392,6 +519,15 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
         [Range(0.0, 1.0)]
         [Display(Name = "Strength Min Opacity", Description = "Floor opacity for the smallest standard trade in a bar; the largest standard trade in that bar renders fully opaque. Large trade sizes are excluded from this comparison, and this never blends toward the Large colors", GroupName = "Standard Trade Detector", Order = 8)]
         public double StrengthMinOpacity { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Extend By Strength", Description = "When enabled, each standard trade's line always extends to the right (Alignment is ignored) with length scaled by its Strength — Max Extend Length (Bars) becomes the length at full strength (the biggest standard trade in the bar), weaker trades draw shorter. The line also fades from its normal Strength/Sequence opacity at the price origin down to fully transparent at the far tip, instead of one flat opacity across a fixed length", GroupName = "Standard Trade Detector", Order = 9)]
+        public bool ExtendByStrength { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 100)]
+        [Display(Name = "Max Extend Length (Bars)", Description = "Maximum horizontal length, in units of one bar's on-screen width, that a standard trade's line can reach when Extend By Strength is enabled — this is the length at Strength 1.0 (the biggest standard trade in the bar); weaker trades draw proportionally shorter. Only used when Extend By Strength is enabled", GroupName = "Standard Trade Detector", Order = 10)]
+        public int MaxExtendLengthBars { get; set; }
 
         [NinjaScriptProperty]
         [Display(Name = "Enable Large Trade Detection", Description = "When disabled, no trade is ever treated as large — all qualifying trades render using only the Standard Trade Detector's line, regardless of size", GroupName = "Large Trade Detection", Order = 1)]
@@ -427,7 +563,7 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
         }
 
         [XmlIgnore]
-        [Display(Name = "Large Trade Print Mode", Description = "How large trades are rendered: Lines (same style as normal trades) or Bubbles (a filled circle at the trade's price, instead of a line)", GroupName = "Large Trade Detection", Order = 5)]
+        [Display(Name = "Large Trade Print Mode", Description = "How large trades are rendered: Lines (same style as normal trades), Bubbles Filled (a solid circle at the trade's price), or Bubbles Unfilled (an unfilled circle outline at the trade's price)", GroupName = "Large Trade Detection", Order = 5)]
         public EGOrderFlowOverlayLargeTradePrintMode LargeTradePrintMode { get; set; }
 
         [Browsable(false)]
@@ -438,15 +574,81 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
         }
 
         [NinjaScriptProperty]
-        [Range(1, 50)]
-        [Display(Name = "Bubble Radius", Description = "Pixel radius of each bubble", GroupName = "Large Trade Detection", Order = 6)]
-        public double BubbleRadius { get; set; }
+        [Range(1, 100)]
+        [Display(Name = "Max Bubble Size", Description = "Maximum pixel radius a bubble can reach — the largest qualifying large trade in a bar renders at this size (LargeSizeRatio = 1.0); smaller large trades in the same bar scale down toward a small fixed floor. Not clamped to bar spacing, so bubbles can render larger than the bar's own on-screen width", GroupName = "Large Trade Detection", Order = 6)]
+        public double MaxBubbleSize { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 20)]
+        [Display(Name = "Bubble Border Width (px)", Description = "Pixel width/thickness of the bubble's border; used as the stroke width when Large Trade Print Mode is Bubbles Unfilled", GroupName = "Large Trade Detection", Order = 7)]
+        public double BubbleBorderWidth { get; set; }
 
         [NinjaScriptProperty]
         [Range(0.0, 1.0)]
-        [Display(Name = "Large Size Min Opacity", Description = "Floor opacity for the smallest qualifying large trade in a bar; the largest large trade in that bar renders fully opaque — same gradient approach as EGFootprintLadder's large trade dots", GroupName = "Large Trade Detection", Order = 7)]
+        [Display(Name = "Large Size Min Opacity", Description = "Floor opacity for the smallest qualifying large trade in a bar; the largest large trade in that bar renders fully opaque — same gradient approach as EGFootprintLadder's large trade dots", GroupName = "Large Trade Detection", Order = 8)]
         public double LargeSizeMinOpacity { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Print Forward", Description = "When enabled, large trade bubbles/lines are drawn in a second pass after all standard trades, so they always render in front regardless of print order within the bar", GroupName = "Large Trade Detection", Order = 9)]
+        public bool PrintForward { get; set; }
 
         #endregion
     }
 }
+
+#region NinjaScript generated code. Neither change nor remove.
+
+namespace NinjaTrader.NinjaScript.Indicators
+{
+	public partial class Indicator : NinjaTrader.Gui.NinjaScript.IndicatorRenderBase
+	{
+		private EducatedGambling.EGOrderFlowOverlay[] cacheEGOrderFlowOverlay;
+		public EducatedGambling.EGOrderFlowOverlay EGOrderFlowOverlay(int tradeThreshold, System.Windows.Media.Brush sellColor, System.Windows.Media.Brush buyColor, int lineLengthBars, double lineWidth, double sequenceMinOpacity, double strengthMinOpacity, bool extendByStrength, int maxExtendLengthBars, bool enableLargeTradeDetection, int largeTradeThreshold, System.Windows.Media.Brush largeSellColor, System.Windows.Media.Brush largeBuyColor, double maxBubbleSize, double bubbleBorderWidth, double largeSizeMinOpacity, bool printForward)
+		{
+			return EGOrderFlowOverlay(Input, tradeThreshold, sellColor, buyColor, lineLengthBars, lineWidth, sequenceMinOpacity, strengthMinOpacity, extendByStrength, maxExtendLengthBars, enableLargeTradeDetection, largeTradeThreshold, largeSellColor, largeBuyColor, maxBubbleSize, bubbleBorderWidth, largeSizeMinOpacity, printForward);
+		}
+
+		public EducatedGambling.EGOrderFlowOverlay EGOrderFlowOverlay(ISeries<double> input, int tradeThreshold, System.Windows.Media.Brush sellColor, System.Windows.Media.Brush buyColor, int lineLengthBars, double lineWidth, double sequenceMinOpacity, double strengthMinOpacity, bool extendByStrength, int maxExtendLengthBars, bool enableLargeTradeDetection, int largeTradeThreshold, System.Windows.Media.Brush largeSellColor, System.Windows.Media.Brush largeBuyColor, double maxBubbleSize, double bubbleBorderWidth, double largeSizeMinOpacity, bool printForward)
+		{
+			if (cacheEGOrderFlowOverlay != null)
+				for (int idx = 0; idx < cacheEGOrderFlowOverlay.Length; idx++)
+					if (cacheEGOrderFlowOverlay[idx] != null && cacheEGOrderFlowOverlay[idx].TradeThreshold == tradeThreshold && cacheEGOrderFlowOverlay[idx].SellColor == sellColor && cacheEGOrderFlowOverlay[idx].BuyColor == buyColor && cacheEGOrderFlowOverlay[idx].LineLengthBars == lineLengthBars && cacheEGOrderFlowOverlay[idx].LineWidth == lineWidth && cacheEGOrderFlowOverlay[idx].SequenceMinOpacity == sequenceMinOpacity && cacheEGOrderFlowOverlay[idx].StrengthMinOpacity == strengthMinOpacity && cacheEGOrderFlowOverlay[idx].ExtendByStrength == extendByStrength && cacheEGOrderFlowOverlay[idx].MaxExtendLengthBars == maxExtendLengthBars && cacheEGOrderFlowOverlay[idx].EnableLargeTradeDetection == enableLargeTradeDetection && cacheEGOrderFlowOverlay[idx].LargeTradeThreshold == largeTradeThreshold && cacheEGOrderFlowOverlay[idx].LargeSellColor == largeSellColor && cacheEGOrderFlowOverlay[idx].LargeBuyColor == largeBuyColor && cacheEGOrderFlowOverlay[idx].MaxBubbleSize == maxBubbleSize && cacheEGOrderFlowOverlay[idx].BubbleBorderWidth == bubbleBorderWidth && cacheEGOrderFlowOverlay[idx].LargeSizeMinOpacity == largeSizeMinOpacity && cacheEGOrderFlowOverlay[idx].PrintForward == printForward && cacheEGOrderFlowOverlay[idx].EqualsInput(input))
+						return cacheEGOrderFlowOverlay[idx];
+			return CacheIndicator<EducatedGambling.EGOrderFlowOverlay>(new EducatedGambling.EGOrderFlowOverlay(){ TradeThreshold = tradeThreshold, SellColor = sellColor, BuyColor = buyColor, LineLengthBars = lineLengthBars, LineWidth = lineWidth, SequenceMinOpacity = sequenceMinOpacity, StrengthMinOpacity = strengthMinOpacity, ExtendByStrength = extendByStrength, MaxExtendLengthBars = maxExtendLengthBars, EnableLargeTradeDetection = enableLargeTradeDetection, LargeTradeThreshold = largeTradeThreshold, LargeSellColor = largeSellColor, LargeBuyColor = largeBuyColor, MaxBubbleSize = maxBubbleSize, BubbleBorderWidth = bubbleBorderWidth, LargeSizeMinOpacity = largeSizeMinOpacity, PrintForward = printForward }, input, ref cacheEGOrderFlowOverlay);
+		}
+	}
+}
+
+namespace NinjaTrader.NinjaScript.MarketAnalyzerColumns
+{
+	public partial class MarketAnalyzerColumn : MarketAnalyzerColumnBase
+	{
+		public Indicators.EducatedGambling.EGOrderFlowOverlay EGOrderFlowOverlay(int tradeThreshold, System.Windows.Media.Brush sellColor, System.Windows.Media.Brush buyColor, int lineLengthBars, double lineWidth, double sequenceMinOpacity, double strengthMinOpacity, bool extendByStrength, int maxExtendLengthBars, bool enableLargeTradeDetection, int largeTradeThreshold, System.Windows.Media.Brush largeSellColor, System.Windows.Media.Brush largeBuyColor, double maxBubbleSize, double bubbleBorderWidth, double largeSizeMinOpacity, bool printForward)
+		{
+			return indicator.EGOrderFlowOverlay(Input, tradeThreshold, sellColor, buyColor, lineLengthBars, lineWidth, sequenceMinOpacity, strengthMinOpacity, extendByStrength, maxExtendLengthBars, enableLargeTradeDetection, largeTradeThreshold, largeSellColor, largeBuyColor, maxBubbleSize, bubbleBorderWidth, largeSizeMinOpacity, printForward);
+		}
+
+		public Indicators.EducatedGambling.EGOrderFlowOverlay EGOrderFlowOverlay(ISeries<double> input , int tradeThreshold, System.Windows.Media.Brush sellColor, System.Windows.Media.Brush buyColor, int lineLengthBars, double lineWidth, double sequenceMinOpacity, double strengthMinOpacity, bool extendByStrength, int maxExtendLengthBars, bool enableLargeTradeDetection, int largeTradeThreshold, System.Windows.Media.Brush largeSellColor, System.Windows.Media.Brush largeBuyColor, double maxBubbleSize, double bubbleBorderWidth, double largeSizeMinOpacity, bool printForward)
+		{
+			return indicator.EGOrderFlowOverlay(input, tradeThreshold, sellColor, buyColor, lineLengthBars, lineWidth, sequenceMinOpacity, strengthMinOpacity, extendByStrength, maxExtendLengthBars, enableLargeTradeDetection, largeTradeThreshold, largeSellColor, largeBuyColor, maxBubbleSize, bubbleBorderWidth, largeSizeMinOpacity, printForward);
+		}
+	}
+}
+
+namespace NinjaTrader.NinjaScript.Strategies
+{
+	public partial class Strategy : NinjaTrader.Gui.NinjaScript.StrategyRenderBase
+	{
+		public Indicators.EducatedGambling.EGOrderFlowOverlay EGOrderFlowOverlay(int tradeThreshold, System.Windows.Media.Brush sellColor, System.Windows.Media.Brush buyColor, int lineLengthBars, double lineWidth, double sequenceMinOpacity, double strengthMinOpacity, bool extendByStrength, int maxExtendLengthBars, bool enableLargeTradeDetection, int largeTradeThreshold, System.Windows.Media.Brush largeSellColor, System.Windows.Media.Brush largeBuyColor, double maxBubbleSize, double bubbleBorderWidth, double largeSizeMinOpacity, bool printForward)
+		{
+			return indicator.EGOrderFlowOverlay(Input, tradeThreshold, sellColor, buyColor, lineLengthBars, lineWidth, sequenceMinOpacity, strengthMinOpacity, extendByStrength, maxExtendLengthBars, enableLargeTradeDetection, largeTradeThreshold, largeSellColor, largeBuyColor, maxBubbleSize, bubbleBorderWidth, largeSizeMinOpacity, printForward);
+		}
+
+		public Indicators.EducatedGambling.EGOrderFlowOverlay EGOrderFlowOverlay(ISeries<double> input , int tradeThreshold, System.Windows.Media.Brush sellColor, System.Windows.Media.Brush buyColor, int lineLengthBars, double lineWidth, double sequenceMinOpacity, double strengthMinOpacity, bool extendByStrength, int maxExtendLengthBars, bool enableLargeTradeDetection, int largeTradeThreshold, System.Windows.Media.Brush largeSellColor, System.Windows.Media.Brush largeBuyColor, double maxBubbleSize, double bubbleBorderWidth, double largeSizeMinOpacity, bool printForward)
+		{
+			return indicator.EGOrderFlowOverlay(input, tradeThreshold, sellColor, buyColor, lineLengthBars, lineWidth, sequenceMinOpacity, strengthMinOpacity, extendByStrength, maxExtendLengthBars, enableLargeTradeDetection, largeTradeThreshold, largeSellColor, largeBuyColor, maxBubbleSize, bubbleBorderWidth, largeSizeMinOpacity, printForward);
+		}
+	}
+}
+
+#endregion
