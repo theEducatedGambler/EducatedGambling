@@ -48,6 +48,17 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
         private Dictionary<int, List<PendingTrade>> pendingByBar;
         private List<ConfirmedTrade> confirmedTrades;
 
+        // Running high for standard trade size, used as Strength's denominator. Scoped to the
+        // current session (reset on Bars.IsFirstBarOfSession) rather than to a single bar — a
+        // per-bar max meant the single biggest standard trade in ANY bar always normalized to
+        // Strength = 1.0 regardless of its actual size, so bar after bar the "biggest" line
+        // rendered near-maximum length/opacity even when real trade sizes varied a lot bar to
+        // bar. A session-scoped running high fixes that while still self-calibrating to the
+        // instrument's actual volume that day, instead of requiring a fixed configured number
+        // (which crushed most trades toward the floor the one time that was tried — see the
+        // comment in FlushPendingTrades).
+        private double sessionMaxStandardSize;
+
         protected override void OnStateChange()
         {
             if (State == State.SetDefaults)
@@ -92,6 +103,7 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
                 currentAsk = double.NaN;
                 pendingByBar = new Dictionary<int, List<PendingTrade>>();
                 confirmedTrades = new List<ConfirmedTrade>();
+                sessionMaxStandardSize = 0;
 
                 // Rendering used to go through tagged Draw.Line objects before this indicator
                 // switched to OnRender/SharpDX. Those chart-persisted objects don't get cleaned
@@ -148,6 +160,17 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
                 return;
             }
 
+            // Reset the Strength reference at the start of each new session (per the chart's
+            // Trading Hours template) rather than never, so a stale running high from a prior,
+            // possibly much busier session doesn't keep suppressing today's trades toward the
+            // opacity/length floor. Checked here (primary series, BarsInProgress == 0) against
+            // the bar that's about to be flushed, before that bar's own trades are compared
+            // against it — simplification: this only reliably catches a session boundary when
+            // the flush isn't multiple bars behind, which matches how the rest of the deferred
+            // flush in FlushPendingTrades is already documented to behave.
+            if (Bars.IsFirstBarOfSession)
+                sessionMaxStandardSize = 0;
+
             FlushPendingTrades();
         }
 
@@ -168,15 +191,18 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
                 List<PendingTrade> trades = pendingByBar[barIndex];
                 pendingByBar.Remove(barIndex);
 
-                // Largest large-trade size and largest standard-trade size seen in this bar, kept
-                // completely separate — same approach as EGFootprintLadder.cs's large trade dots
-                // (maxLargeTradeSizeThisBar / sizeRatio), just computed per historical bar here
-                // instead of live against the one forming bar. Standard trades are never scaled
-                // against large-trade sizes: since large trades can be many times bigger, using
-                // Large Trade Threshold as the scale's ceiling crushed nearly every standard trade
-                // toward the opacity floor. Each population is normalized against its own max.
+                // Largest large-trade size seen in THIS bar (large trades stay per-bar, unchanged)
+                // and the running session-high standard trade size (sessionMaxStandardSize field),
+                // kept completely separate — same approach as EGFootprintLadder.cs's large trade
+                // dots (maxLargeTradeSizeThisBar / sizeRatio) for the large side. Standard trades
+                // are never scaled against large-trade sizes: since large trades can be many times
+                // bigger, using Large Trade Threshold as the scale's ceiling crushed nearly every
+                // standard trade toward the opacity floor.
+                //
+                // sessionMaxStandardSize is updated here (not reset here — see the
+                // Bars.IsFirstBarOfSession check in OnBarUpdate) so a new session-high print in
+                // THIS bar still correctly normalizes to Strength = 1.0 for its own bar.
                 double maxLargeSizeInBar = 0;
-                double maxStandardSizeInBar = 0;
                 for (int i = 0; i < trades.Count; i++)
                 {
                     if (trades[i].IsLarge)
@@ -184,9 +210,9 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
                         if (trades[i].Size > maxLargeSizeInBar)
                             maxLargeSizeInBar = trades[i].Size;
                     }
-                    else if (trades[i].Size > maxStandardSizeInBar)
+                    else if (trades[i].Size > sessionMaxStandardSize)
                     {
-                        maxStandardSizeInBar = trades[i].Size;
+                        sessionMaxStandardSize = trades[i].Size;
                     }
                 }
 
@@ -195,9 +221,13 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
                     PendingTrade trade = trades[i];
 
                     // Strength: this standard trade's size relative to the biggest standard trade
-                    // in the same bar (large trades excluded entirely from the comparison).
-                    double strength = !trade.IsLarge && maxStandardSizeInBar > 0
-                        ? trade.Size / maxStandardSizeInBar
+                    // seen so far this session (large trades excluded entirely from the
+                    // comparison). Session-scoped rather than per-bar so the single biggest
+                    // standard trade in any one bar doesn't automatically render at full
+                    // strength/length regardless of its actual size — see the comment on
+                    // sessionMaxStandardSize's declaration.
+                    double strength = !trade.IsLarge && sessionMaxStandardSize > 0
+                        ? trade.Size / sessionMaxStandardSize
                         : 1.0;
 
                     // Sequence: this trade's position among all qualifying trades in the same bar
@@ -517,16 +547,16 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
 
         [NinjaScriptProperty]
         [Range(0.0, 1.0)]
-        [Display(Name = "Strength Min Opacity", Description = "Floor opacity for the smallest standard trade in a bar; the largest standard trade in that bar renders fully opaque. Large trade sizes are excluded from this comparison, and this never blends toward the Large colors", GroupName = "Standard Trade Detector", Order = 8)]
+        [Display(Name = "Strength Min Opacity", Description = "Floor opacity for the smallest standard trade relative to the biggest standard trade seen so far this session; that session-high trade renders fully opaque. Large trade sizes are excluded from this comparison, and this never blends toward the Large colors", GroupName = "Standard Trade Detector", Order = 8)]
         public double StrengthMinOpacity { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Extend By Strength", Description = "When enabled, each standard trade's line always extends to the right (Alignment is ignored) with length scaled by its Strength — Max Extend Length (Bars) becomes the length at full strength (the biggest standard trade in the bar), weaker trades draw shorter. The line also fades from its normal Strength/Sequence opacity at the price origin down to fully transparent at the far tip, instead of one flat opacity across a fixed length", GroupName = "Standard Trade Detector", Order = 9)]
+        [Display(Name = "Extend By Strength", Description = "When enabled, each standard trade's line always extends to the right (Alignment is ignored) with length scaled by its Strength — Max Extend Length (Bars) becomes the length at full strength (the biggest standard trade seen so far this session), weaker trades draw shorter. The line also fades from its normal Strength/Sequence opacity at the price origin down to fully transparent at the far tip, instead of one flat opacity across a fixed length", GroupName = "Standard Trade Detector", Order = 9)]
         public bool ExtendByStrength { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 100)]
-        [Display(Name = "Max Extend Length (Bars)", Description = "Maximum horizontal length, in units of one bar's on-screen width, that a standard trade's line can reach when Extend By Strength is enabled — this is the length at Strength 1.0 (the biggest standard trade in the bar); weaker trades draw proportionally shorter. Only used when Extend By Strength is enabled", GroupName = "Standard Trade Detector", Order = 10)]
+        [Display(Name = "Max Extend Length (Bars)", Description = "Maximum horizontal length, in units of one bar's on-screen width, that a standard trade's line can reach when Extend By Strength is enabled — this is the length at Strength 1.0 (the biggest standard trade seen so far this session); weaker trades draw proportionally shorter. Only used when Extend By Strength is enabled", GroupName = "Standard Trade Detector", Order = 10)]
         public int MaxExtendLengthBars { get; set; }
 
         [NinjaScriptProperty]
