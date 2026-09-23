@@ -56,10 +56,6 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
             get { return sessions.Count > 0 ? sessions[sessions.Count - 1] : null; }
         }
 
-        // These track the market's actual Bid/Ask quote prices (not the aggressor-side
-        // classification, which uses Buy/Sell terminology below).
-        private double currentBid;
-        private double currentAsk;
         private int lastGaltonProcessedBar = -1;
 
         private SessionIterator profileSessionIterator;
@@ -129,9 +125,11 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
                 SecondaryValueAreaLabelFontSize = 11;
 
                 BuySellLayout = EGVolumeProfileBuySellLayout.Overlay;
+                BuySellOpacity = 70;
 
                 DeltaLayoutRatio = 0.5;
                 DeltaDisplayDirection = EGVolumeProfileDeltaDisplayDirection.Right;
+                DeltaOpacity = 70;
 
                 ShowLargeOrders = false;
                 LargeOrderThreshold = 50;
@@ -153,9 +151,13 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
             }
             else if (State == State.Configure)
             {
-                AddDataSeries(Instrument.FullName, BarsPeriodType.Tick, 1, MarketDataType.Last);
-                AddDataSeries(Instrument.FullName, BarsPeriodType.Tick, 1, MarketDataType.Bid);
-                AddDataSeries(Instrument.FullName, BarsPeriodType.Tick, 1, MarketDataType.Ask);
+                // Single hidden series (Last only) — historical ask/bid comes from this same tick
+                // record via BarsArray[1].GetAsk/GetBid; live ask/bid comes from OnMarketData
+                // instead. See root CLAUDE.md "Better technique" under "Classifying buy vs sell
+                // aggressor" — supersedes the old three-series (Last/Bid/Ask) approach this file
+                // used to use, confirmed against a third-party indicator (VolumeDetector.cs) that
+                // matches NinjaTrader's native Order Flow+ Trade Detector.
+                AddDataSeries(Instrument.FullName, BarsPeriodType.Tick, 1);
             }
             else if (State == State.DataLoaded)
             {
@@ -248,33 +250,62 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
                 return;
             }
 
-            if (BarsInProgress == 2)
-            {
-                currentBid = Close[0];
-                return;
-            }
+            // The hidden tick series (BarsInProgress == 1) is only acted on during
+            // State.Historical — historical ask/bid comes from that same tick record (see
+            // ProcessHistoricalTick). Once live, it keeps ticking in the background but is
+            // ignored; OnMarketData below takes over instead, since it hands us the feed's own
+            // trade-synchronized Ask/Bid directly. See root CLAUDE.md "Better technique" under
+            // "Classifying buy vs sell aggressor" for the full writeup.
+            if (BarsInProgress == 1 && State == State.Historical)
+                ProcessHistoricalTick();
+        }
 
-            if (BarsInProgress == 3)
-            {
-                currentAsk = Close[0];
+        private void ProcessHistoricalTick()
+        {
+            if (CurrentBars[1] < 0)
                 return;
-            }
 
-            if (BarsInProgress != 1) return;
+            double price = BarsArray[1].GetClose(CurrentBars[1]);
+            double vol = BarsArray[1].GetVolume(CurrentBars[1]);
+            double ask = Instrument.MasterInstrument.RoundToTickSize(BarsArray[1].GetAsk(CurrentBars[1]));
+            double bid = Instrument.MasterInstrument.RoundToTickSize(BarsArray[1].GetBid(CurrentBars[1]));
+
+            ProcessTrade(price, vol, ask, bid);
+        }
+
+        // Live trade-synchronized classification: OnMarketData hands us the feed's own Ask/Bid for
+        // THIS specific trade event directly — no hidden series needed at all in real time.
+        protected override void OnMarketData(MarketDataEventArgs marketData)
+        {
+            if (State != State.Realtime || marketData.MarketDataType != MarketDataType.Last)
+                return;
+
+            double ask = Instrument.MasterInstrument.RoundToTickSize(marketData.Ask);
+            double bid = Instrument.MasterInstrument.RoundToTickSize(marketData.Bid);
+
+            ProcessTrade(marketData.Price, marketData.Volume, ask, bid);
+        }
+
+        // Shared classification + accumulation for both the historical (ProcessHistoricalTick) and
+        // live (OnMarketData) paths. ask <= bid is a sanity guard against missing/crossed quote
+        // data (replaces the old currentAsk > 0 / currentBid > 0 checks, which guarded against the
+        // fields' uninitialized-zero state instead).
+        private void ProcessTrade(double price, double vol, double ask, double bid)
+        {
+            if (ask <= bid)
+                return;
 
             SessionProfileData session = CurrentSession;
             if (session == null) return;
 
             double tickSize = Instrument.MasterInstrument.TickSize;
             double rowSize = tickSize * Math.Max(1, TickAggregation);
-            double price = Close[0];
             double bucket = Instrument.MasterInstrument.RoundToTickSize(Math.Floor(price / rowSize) * rowSize);
-            double vol = Volume[0];
 
             // Quote rule: a print at or above the current ask means a buyer crossed the spread
             // (buy-initiated); at or below the current bid means a seller crossed it (sell-initiated).
-            bool isBuy = currentAsk > 0 && price >= currentAsk;
-            bool isSell = !isBuy && currentBid > 0 && price <= currentBid;
+            bool isBuy = price >= ask;
+            bool isSell = !isBuy && price <= bid;
 
             if (ShowLargeOrders && vol >= LargeOrderThreshold && (isBuy || isSell))
             {
@@ -528,7 +559,7 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
 
             int sessionsToShow = Math.Max(1, SessionsToDisplay);
             int startIdx = Math.Max(0, sessions.Count - sessionsToShow);
-            bool rightAlign = ProfileAlignment == EGVolumeProfileAlignment.Right;
+            bool rightAlign = ProfileAlignment == EGVolumeProfileAlignment.Right || ProfileAlignment == EGVolumeProfileAlignment.MostRight;
 
             for (int i = startIdx; i < sessions.Count; i++)
             {
@@ -542,10 +573,22 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
 
                 if (effectiveEndBar < ChartBars.FromIndex || session.StartBar > ChartBars.ToIndex) continue;
 
-                int anchorBar = rightAlign
-                    ? Math.Min(ChartBars.ToIndex, effectiveEndBar)
-                    : Math.Max(ChartBars.FromIndex, session.StartBar);
-                float anchorX = chartControl.GetXByBarIndex(ChartBars, anchorBar);
+                float anchorX;
+                if (ProfileAlignment == EGVolumeProfileAlignment.MostRight)
+                {
+                    // Pinned to the chart panel's actual right edge (a fixed screen position,
+                    // not a bar index) per the OnRender right-edge recipe - so the profile stays
+                    // flush against the right side of the chart even when there's empty reserved
+                    // space past the current/live bar, rather than tracking that bar's own x.
+                    anchorX = ChartPanel.X + ChartPanel.W;
+                }
+                else
+                {
+                    int anchorBar = rightAlign
+                        ? Math.Min(ChartBars.ToIndex, effectiveEndBar)
+                        : Math.Max(ChartBars.FromIndex, session.StartBar);
+                    anchorX = chartControl.GetXByBarIndex(ChartBars, anchorBar);
+                }
 
                 RenderSessionProfile(chartScale, session, anchorX, rightAlign, rowSize);
                 RenderLevelsOfInterest(chartScale, session, anchorX, rightAlign);
@@ -581,11 +624,11 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
         {
             if (ViewMode == EGVolumeProfileViewMode.Sell)
             {
-                RenderProfile(chartScale, session.SellVolume, sellBrushDx, anchorX, rightAlign, rowSize, session);
+                RenderProfile(chartScale, session.SellVolume, sellBrushDx, anchorX, rightAlign, rowSize, session, BuySellOpacity);
             }
             else if (ViewMode == EGVolumeProfileViewMode.Buy)
             {
-                RenderProfile(chartScale, session.BuyVolume, buyBrushDx, anchorX, rightAlign, rowSize, session);
+                RenderProfile(chartScale, session.BuyVolume, buyBrushDx, anchorX, rightAlign, rowSize, session, BuySellOpacity);
             }
             else if (ViewMode == EGVolumeProfileViewMode.BuySell)
             {
@@ -603,13 +646,13 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
 
                     // Sell always grows toward the left of center, Buy always toward the right,
                     // independent of Profile Alignment (which only moves the anchor/center position).
-                    RenderProfile(chartScale, sellData, sellBrushDx, centerX, true, rowSize, session, halfMaxWidth);
-                    RenderProfile(chartScale, buyData, buyBrushDx, centerX, false, rowSize, session, halfMaxWidth);
+                    RenderProfile(chartScale, sellData, sellBrushDx, centerX, true, rowSize, session, BuySellOpacity, halfMaxWidth);
+                    RenderProfile(chartScale, buyData, buyBrushDx, centerX, false, rowSize, session, BuySellOpacity, halfMaxWidth);
                 }
                 else
                 {
-                    RenderProfile(chartScale, sellData, sellBrushDx, anchorX, rightAlign, rowSize, session);
-                    RenderProfile(chartScale, buyData, buyBrushDx, anchorX, rightAlign, rowSize, session);
+                    RenderProfile(chartScale, sellData, sellBrushDx, anchorX, rightAlign, rowSize, session, BuySellOpacity);
+                    RenderProfile(chartScale, buyData, buyBrushDx, anchorX, rightAlign, rowSize, session, BuySellOpacity);
                 }
             }
             else if (ViewMode == EGVolumeProfileViewMode.VolumeDelta)
@@ -636,12 +679,12 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
                 bool deltaGrowsRight = DeltaDisplayDirection == EGVolumeProfileDeltaDisplayDirection.Right;
                 float deltaAnchor = deltaGrowsRight ? deltaZoneLeftEdge : deltaZoneRightEdge;
 
-                RenderProfile(chartScale, session.Volume, profileBrushDx, splitX, deltaZoneOnRight, rowSize, session, volumeWidth);
+                RenderProfile(chartScale, session.Volume, profileBrushDx, splitX, deltaZoneOnRight, rowSize, session, ProfileOpacity, volumeWidth);
                 RenderDeltaProfile(chartScale, session, deltaAnchor, !deltaGrowsRight, rowSize, deltaWidth);
             }
             else
             {
-                RenderProfile(chartScale, session.Volume, profileBrushDx, anchorX, rightAlign, rowSize, session);
+                RenderProfile(chartScale, session.Volume, profileBrushDx, anchorX, rightAlign, rowSize, session, ProfileOpacity);
             }
         }
 
@@ -669,8 +712,8 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
             }
             if (maxAbsDelta <= 0) return;
 
-            buyBrushDx.Opacity = (float)(ProfileOpacity / 100.0);
-            sellBrushDx.Opacity = (float)(ProfileOpacity / 100.0);
+            buyBrushDx.Opacity = (float)(DeltaOpacity / 100.0);
+            sellBrushDx.Opacity = (float)(DeltaOpacity / 100.0);
 
             foreach (KeyValuePair<double, double> kv in deltaByPrice)
             {
@@ -873,7 +916,7 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
         }
 
         private void RenderProfile(ChartScale chartScale, Dictionary<double, double> data, SharpDX.Direct2D1.Brush baseBrushDx,
-            float anchorX, bool rightAlign, double rowSize, SessionProfileData session, float? maxBarWidthOverride = null)
+            float anchorX, bool rightAlign, double rowSize, SessionProfileData session, double baseOpacity, float? maxBarWidthOverride = null)
         {
             if (data.Count == 0) return;
 
@@ -892,7 +935,7 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
 
             if (DisplayMode == EGVolumeProfileDisplayMode.Outline)
             {
-                RenderOutline(data, chartScale, buckets, pocPrice, vaLow, vaHigh, svaLow, svaHigh, rowSize, maxVolume, anchorX, maxBarWidth, rightAlign, baseBrushDx);
+                RenderOutline(data, chartScale, buckets, pocPrice, vaLow, vaHigh, svaLow, svaHigh, rowSize, maxVolume, anchorX, maxBarWidth, rightAlign, baseBrushDx, baseOpacity);
                 return;
             }
 
@@ -924,7 +967,7 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
                 bool isPoc = ShowPOC && price == pocPrice;
 
                 SharpDX.Direct2D1.Brush brush = baseBrushDx;
-                double baseOpacityPercent = ProfileOpacity;
+                double baseOpacityPercent = baseOpacity;
                 if (inVA) { brush = valueAreaBrushDx; baseOpacityPercent = ValueAreaOpacity; }
                 if (inSecondaryVA) { brush = secondaryValueAreaBrushDx; baseOpacityPercent = SecondaryValueAreaOpacity; }
                 if (isPoc) { brush = pocBrushDx; baseOpacityPercent = POCOpacity; }
@@ -945,11 +988,11 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
 
         private void RenderOutline(Dictionary<double, double> data, ChartScale chartScale, List<double> buckets, double pocPrice,
             double vaLow, double vaHigh, double svaLow, double svaHigh,
-            double rowSize, double maxVolume, float anchorX, float maxBarWidth, bool rightAlign, SharpDX.Direct2D1.Brush baseBrushDx)
+            double rowSize, double maxVolume, float anchorX, float maxBarWidth, bool rightAlign, SharpDX.Direct2D1.Brush baseBrushDx, double baseOpacity)
         {
             using (SharpDX.Direct2D1.PathGeometry baseGeometry = BuildEnvelopeGeometry(data, buckets, chartScale, maxVolume, anchorX, maxBarWidth, rightAlign))
             {
-                baseBrushDx.Opacity = (float)(ProfileOpacity / 100.0);
+                baseBrushDx.Opacity = (float)(baseOpacity / 100.0);
                 RenderTarget.FillGeometry(baseGeometry, baseBrushDx);
             }
 
@@ -1159,7 +1202,7 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
         public double POCOpacity { get; set; }
 
         [XmlIgnore]
-        [Display(Name = "Profile Alignment", Description = "Left anchors each profile at its own session start and extends it rightward; Right anchors it at its own session end and extends it leftward. In Volume Delta view mode, this also fixes which side the Volume vs Delta sub-profiles occupy (Right = Volume on the left, Delta on the right; Left = Volume on the right, Delta on the left)", GroupName = "Profile", Order = 3)]
+        [Display(Name = "Profile Alignment", Description = "Left anchors each profile at its own session start and extends it rightward; Right anchors it at its own session end and extends it leftward; Most Right pins it to the chart panel's actual right edge (not a bar) and extends it leftward, so it stays flush against the right side of the chart even past the live bar. In Volume Delta view mode, this also fixes which side the Volume vs Delta sub-profiles occupy (Right/Most Right = Volume on the left, Delta on the right; Left = Volume on the right, Delta on the left)", GroupName = "Profile", Order = 3)]
         public EGVolumeProfileAlignment ProfileAlignment { get; set; }
 
         [Browsable(false)]
@@ -1176,7 +1219,7 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
 
         [NinjaScriptProperty]
         [Range(0, 100)]
-        [Display(Name = "Profile Opacity", Description = "Opacity of profile bars outside the Value Area(s)", GroupName = "Profile", Order = 5)]
+        [Display(Name = "Profile Opacity", Description = "Opacity of Volume profile bars outside the Value Area(s), used in Volume view mode and the Volume side of Volume Delta. Sell/Buy/Buy-Sell bars use Buy/Sell Opacity instead, and the Delta side of Volume Delta uses Delta Opacity", GroupName = "Profile", Order = 5)]
         public double ProfileOpacity { get; set; }
 
         // ----- Value Area -----
@@ -1288,6 +1331,11 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
             set { BuySellLayout = (EGVolumeProfileBuySellLayout)Enum.Parse(typeof(EGVolumeProfileBuySellLayout), value); }
         }
 
+        [NinjaScriptProperty]
+        [Range(0, 100)]
+        [Display(Name = "Buy/Sell Opacity", Description = "Opacity of Sell and Buy profile bars outside the Value Area(s), used in Sell, Buy, and Buy/Sell view modes", GroupName = "Buy/Sell", Order = 2)]
+        public double BuySellOpacity { get; set; }
+
         // ----- Volume Delta -----
 
         [NinjaScriptProperty]
@@ -1306,6 +1354,11 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
             get { return DeltaDisplayDirection.ToString(); }
             set { DeltaDisplayDirection = (EGVolumeProfileDeltaDisplayDirection)Enum.Parse(typeof(EGVolumeProfileDeltaDisplayDirection), value); }
         }
+
+        [NinjaScriptProperty]
+        [Range(0, 100)]
+        [Display(Name = "Delta Opacity", Description = "Only used when View Mode is Volume Delta. Opacity of the Delta side's bars", GroupName = "Volume Delta", Order = 3)]
+        public double DeltaOpacity { get; set; }
 
         // ----- Levels of Interest -----
 
@@ -1494,7 +1547,7 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
         #endregion
     }
 
-    public enum EGVolumeProfileAlignment { Left, Right }
+    public enum EGVolumeProfileAlignment { Left, Right, MostRight }
 
     public enum EGVolumeProfileDisplayMode { Standard, Outline }
 
@@ -1609,18 +1662,18 @@ namespace NinjaTrader.NinjaScript.Indicators
 	public partial class Indicator : NinjaTrader.Gui.NinjaScript.IndicatorRenderBase
 	{
 		private EducatedGambling.EGVolumeProfile[] cacheEGVolumeProfile;
-		public EducatedGambling.EGVolumeProfile EGVolumeProfile(string tradingHoursTemplate, int sessionsToDisplay, int tickAggregation, int bVCLookback, bool isolateDominantSide, bool showPOC, double pOCOpacity, double profileWidthPercent, double profileOpacity, bool showValueArea, double valueAreaPercent, double valueAreaOpacity, bool extendValueAreaLine, int valueAreaLineWidthPixels, DashStyleHelper valueAreaLineStyle, double valueAreaLineOpacity, bool showValueAreaLabels, string valueAreaLabelFontFamily, double valueAreaLabelFontSize, bool showSecondaryValueArea, double secondaryValueAreaPercent, double secondaryValueAreaOpacity, bool extendSecondaryValueAreaLine, int secondaryValueAreaLineWidthPixels, DashStyleHelper secondaryValueAreaLineStyle, double secondaryValueAreaLineOpacity, bool showSecondaryValueAreaLabels, string secondaryValueAreaLabelFontFamily, double secondaryValueAreaLabelFontSize, double deltaLayoutRatio, bool showLargeOrders, int largeOrderThreshold, int largeOrderMaxPerRow, int largeOrderSize, int largeOrderSpacing, bool showImbalance, double imbalanceThresholdPercent, System.Windows.Media.Brush profileColor, System.Windows.Media.Brush valueAreaColor, System.Windows.Media.Brush secondaryValueAreaColor, System.Windows.Media.Brush pOCColor, System.Windows.Media.Brush sellColor, System.Windows.Media.Brush buyColor, System.Windows.Media.Brush largeSellColor, System.Windows.Media.Brush largeBuyColor)
+		public EducatedGambling.EGVolumeProfile EGVolumeProfile(string tradingHoursTemplate, int sessionsToDisplay, int tickAggregation, int bVCLookback, bool isolateDominantSide, bool showPOC, double pOCOpacity, double profileWidthPercent, double profileOpacity, bool showValueArea, double valueAreaPercent, double valueAreaOpacity, bool extendValueAreaLine, int valueAreaLineWidthPixels, DashStyleHelper valueAreaLineStyle, double valueAreaLineOpacity, bool showValueAreaLabels, string valueAreaLabelFontFamily, double valueAreaLabelFontSize, bool showSecondaryValueArea, double secondaryValueAreaPercent, double secondaryValueAreaOpacity, bool extendSecondaryValueAreaLine, int secondaryValueAreaLineWidthPixels, DashStyleHelper secondaryValueAreaLineStyle, double secondaryValueAreaLineOpacity, bool showSecondaryValueAreaLabels, string secondaryValueAreaLabelFontFamily, double secondaryValueAreaLabelFontSize, double buySellOpacity, double deltaLayoutRatio, double deltaOpacity, bool showLargeOrders, int largeOrderThreshold, int largeOrderMaxPerRow, int largeOrderSize, int largeOrderSpacing, bool showImbalance, double imbalanceThresholdPercent, System.Windows.Media.Brush profileColor, System.Windows.Media.Brush valueAreaColor, System.Windows.Media.Brush secondaryValueAreaColor, System.Windows.Media.Brush pOCColor, System.Windows.Media.Brush sellColor, System.Windows.Media.Brush buyColor, System.Windows.Media.Brush largeSellColor, System.Windows.Media.Brush largeBuyColor)
 		{
-			return EGVolumeProfile(Input, tradingHoursTemplate, sessionsToDisplay, tickAggregation, bVCLookback, isolateDominantSide, showPOC, pOCOpacity, profileWidthPercent, profileOpacity, showValueArea, valueAreaPercent, valueAreaOpacity, extendValueAreaLine, valueAreaLineWidthPixels, valueAreaLineStyle, valueAreaLineOpacity, showValueAreaLabels, valueAreaLabelFontFamily, valueAreaLabelFontSize, showSecondaryValueArea, secondaryValueAreaPercent, secondaryValueAreaOpacity, extendSecondaryValueAreaLine, secondaryValueAreaLineWidthPixels, secondaryValueAreaLineStyle, secondaryValueAreaLineOpacity, showSecondaryValueAreaLabels, secondaryValueAreaLabelFontFamily, secondaryValueAreaLabelFontSize, deltaLayoutRatio, showLargeOrders, largeOrderThreshold, largeOrderMaxPerRow, largeOrderSize, largeOrderSpacing, showImbalance, imbalanceThresholdPercent, profileColor, valueAreaColor, secondaryValueAreaColor, pOCColor, sellColor, buyColor, largeSellColor, largeBuyColor);
+			return EGVolumeProfile(Input, tradingHoursTemplate, sessionsToDisplay, tickAggregation, bVCLookback, isolateDominantSide, showPOC, pOCOpacity, profileWidthPercent, profileOpacity, showValueArea, valueAreaPercent, valueAreaOpacity, extendValueAreaLine, valueAreaLineWidthPixels, valueAreaLineStyle, valueAreaLineOpacity, showValueAreaLabels, valueAreaLabelFontFamily, valueAreaLabelFontSize, showSecondaryValueArea, secondaryValueAreaPercent, secondaryValueAreaOpacity, extendSecondaryValueAreaLine, secondaryValueAreaLineWidthPixels, secondaryValueAreaLineStyle, secondaryValueAreaLineOpacity, showSecondaryValueAreaLabels, secondaryValueAreaLabelFontFamily, secondaryValueAreaLabelFontSize, buySellOpacity, deltaLayoutRatio, deltaOpacity, showLargeOrders, largeOrderThreshold, largeOrderMaxPerRow, largeOrderSize, largeOrderSpacing, showImbalance, imbalanceThresholdPercent, profileColor, valueAreaColor, secondaryValueAreaColor, pOCColor, sellColor, buyColor, largeSellColor, largeBuyColor);
 		}
 
-		public EducatedGambling.EGVolumeProfile EGVolumeProfile(ISeries<double> input, string tradingHoursTemplate, int sessionsToDisplay, int tickAggregation, int bVCLookback, bool isolateDominantSide, bool showPOC, double pOCOpacity, double profileWidthPercent, double profileOpacity, bool showValueArea, double valueAreaPercent, double valueAreaOpacity, bool extendValueAreaLine, int valueAreaLineWidthPixels, DashStyleHelper valueAreaLineStyle, double valueAreaLineOpacity, bool showValueAreaLabels, string valueAreaLabelFontFamily, double valueAreaLabelFontSize, bool showSecondaryValueArea, double secondaryValueAreaPercent, double secondaryValueAreaOpacity, bool extendSecondaryValueAreaLine, int secondaryValueAreaLineWidthPixels, DashStyleHelper secondaryValueAreaLineStyle, double secondaryValueAreaLineOpacity, bool showSecondaryValueAreaLabels, string secondaryValueAreaLabelFontFamily, double secondaryValueAreaLabelFontSize, double deltaLayoutRatio, bool showLargeOrders, int largeOrderThreshold, int largeOrderMaxPerRow, int largeOrderSize, int largeOrderSpacing, bool showImbalance, double imbalanceThresholdPercent, System.Windows.Media.Brush profileColor, System.Windows.Media.Brush valueAreaColor, System.Windows.Media.Brush secondaryValueAreaColor, System.Windows.Media.Brush pOCColor, System.Windows.Media.Brush sellColor, System.Windows.Media.Brush buyColor, System.Windows.Media.Brush largeSellColor, System.Windows.Media.Brush largeBuyColor)
+		public EducatedGambling.EGVolumeProfile EGVolumeProfile(ISeries<double> input, string tradingHoursTemplate, int sessionsToDisplay, int tickAggregation, int bVCLookback, bool isolateDominantSide, bool showPOC, double pOCOpacity, double profileWidthPercent, double profileOpacity, bool showValueArea, double valueAreaPercent, double valueAreaOpacity, bool extendValueAreaLine, int valueAreaLineWidthPixels, DashStyleHelper valueAreaLineStyle, double valueAreaLineOpacity, bool showValueAreaLabels, string valueAreaLabelFontFamily, double valueAreaLabelFontSize, bool showSecondaryValueArea, double secondaryValueAreaPercent, double secondaryValueAreaOpacity, bool extendSecondaryValueAreaLine, int secondaryValueAreaLineWidthPixels, DashStyleHelper secondaryValueAreaLineStyle, double secondaryValueAreaLineOpacity, bool showSecondaryValueAreaLabels, string secondaryValueAreaLabelFontFamily, double secondaryValueAreaLabelFontSize, double buySellOpacity, double deltaLayoutRatio, double deltaOpacity, bool showLargeOrders, int largeOrderThreshold, int largeOrderMaxPerRow, int largeOrderSize, int largeOrderSpacing, bool showImbalance, double imbalanceThresholdPercent, System.Windows.Media.Brush profileColor, System.Windows.Media.Brush valueAreaColor, System.Windows.Media.Brush secondaryValueAreaColor, System.Windows.Media.Brush pOCColor, System.Windows.Media.Brush sellColor, System.Windows.Media.Brush buyColor, System.Windows.Media.Brush largeSellColor, System.Windows.Media.Brush largeBuyColor)
 		{
 			if (cacheEGVolumeProfile != null)
 				for (int idx = 0; idx < cacheEGVolumeProfile.Length; idx++)
-					if (cacheEGVolumeProfile[idx] != null && cacheEGVolumeProfile[idx].TradingHoursTemplate == tradingHoursTemplate && cacheEGVolumeProfile[idx].SessionsToDisplay == sessionsToDisplay && cacheEGVolumeProfile[idx].TickAggregation == tickAggregation && cacheEGVolumeProfile[idx].BVCLookback == bVCLookback && cacheEGVolumeProfile[idx].IsolateDominantSide == isolateDominantSide && cacheEGVolumeProfile[idx].ShowPOC == showPOC && cacheEGVolumeProfile[idx].POCOpacity == pOCOpacity && cacheEGVolumeProfile[idx].ProfileWidthPercent == profileWidthPercent && cacheEGVolumeProfile[idx].ProfileOpacity == profileOpacity && cacheEGVolumeProfile[idx].ShowValueArea == showValueArea && cacheEGVolumeProfile[idx].ValueAreaPercent == valueAreaPercent && cacheEGVolumeProfile[idx].ValueAreaOpacity == valueAreaOpacity && cacheEGVolumeProfile[idx].ExtendValueAreaLine == extendValueAreaLine && cacheEGVolumeProfile[idx].ValueAreaLineWidthPixels == valueAreaLineWidthPixels && cacheEGVolumeProfile[idx].ValueAreaLineStyle == valueAreaLineStyle && cacheEGVolumeProfile[idx].ValueAreaLineOpacity == valueAreaLineOpacity && cacheEGVolumeProfile[idx].ShowValueAreaLabels == showValueAreaLabels && cacheEGVolumeProfile[idx].ValueAreaLabelFontFamily == valueAreaLabelFontFamily && cacheEGVolumeProfile[idx].ValueAreaLabelFontSize == valueAreaLabelFontSize && cacheEGVolumeProfile[idx].ShowSecondaryValueArea == showSecondaryValueArea && cacheEGVolumeProfile[idx].SecondaryValueAreaPercent == secondaryValueAreaPercent && cacheEGVolumeProfile[idx].SecondaryValueAreaOpacity == secondaryValueAreaOpacity && cacheEGVolumeProfile[idx].ExtendSecondaryValueAreaLine == extendSecondaryValueAreaLine && cacheEGVolumeProfile[idx].SecondaryValueAreaLineWidthPixels == secondaryValueAreaLineWidthPixels && cacheEGVolumeProfile[idx].SecondaryValueAreaLineStyle == secondaryValueAreaLineStyle && cacheEGVolumeProfile[idx].SecondaryValueAreaLineOpacity == secondaryValueAreaLineOpacity && cacheEGVolumeProfile[idx].ShowSecondaryValueAreaLabels == showSecondaryValueAreaLabels && cacheEGVolumeProfile[idx].SecondaryValueAreaLabelFontFamily == secondaryValueAreaLabelFontFamily && cacheEGVolumeProfile[idx].SecondaryValueAreaLabelFontSize == secondaryValueAreaLabelFontSize && cacheEGVolumeProfile[idx].DeltaLayoutRatio == deltaLayoutRatio && cacheEGVolumeProfile[idx].ShowLargeOrders == showLargeOrders && cacheEGVolumeProfile[idx].LargeOrderThreshold == largeOrderThreshold && cacheEGVolumeProfile[idx].LargeOrderMaxPerRow == largeOrderMaxPerRow && cacheEGVolumeProfile[idx].LargeOrderSize == largeOrderSize && cacheEGVolumeProfile[idx].LargeOrderSpacing == largeOrderSpacing && cacheEGVolumeProfile[idx].ShowImbalance == showImbalance && cacheEGVolumeProfile[idx].ImbalanceThresholdPercent == imbalanceThresholdPercent && cacheEGVolumeProfile[idx].ProfileColor == profileColor && cacheEGVolumeProfile[idx].ValueAreaColor == valueAreaColor && cacheEGVolumeProfile[idx].SecondaryValueAreaColor == secondaryValueAreaColor && cacheEGVolumeProfile[idx].POCColor == pOCColor && cacheEGVolumeProfile[idx].SellColor == sellColor && cacheEGVolumeProfile[idx].BuyColor == buyColor && cacheEGVolumeProfile[idx].LargeSellColor == largeSellColor && cacheEGVolumeProfile[idx].LargeBuyColor == largeBuyColor && cacheEGVolumeProfile[idx].EqualsInput(input))
+					if (cacheEGVolumeProfile[idx] != null && cacheEGVolumeProfile[idx].TradingHoursTemplate == tradingHoursTemplate && cacheEGVolumeProfile[idx].SessionsToDisplay == sessionsToDisplay && cacheEGVolumeProfile[idx].TickAggregation == tickAggregation && cacheEGVolumeProfile[idx].BVCLookback == bVCLookback && cacheEGVolumeProfile[idx].IsolateDominantSide == isolateDominantSide && cacheEGVolumeProfile[idx].ShowPOC == showPOC && cacheEGVolumeProfile[idx].POCOpacity == pOCOpacity && cacheEGVolumeProfile[idx].ProfileWidthPercent == profileWidthPercent && cacheEGVolumeProfile[idx].ProfileOpacity == profileOpacity && cacheEGVolumeProfile[idx].ShowValueArea == showValueArea && cacheEGVolumeProfile[idx].ValueAreaPercent == valueAreaPercent && cacheEGVolumeProfile[idx].ValueAreaOpacity == valueAreaOpacity && cacheEGVolumeProfile[idx].ExtendValueAreaLine == extendValueAreaLine && cacheEGVolumeProfile[idx].ValueAreaLineWidthPixels == valueAreaLineWidthPixels && cacheEGVolumeProfile[idx].ValueAreaLineStyle == valueAreaLineStyle && cacheEGVolumeProfile[idx].ValueAreaLineOpacity == valueAreaLineOpacity && cacheEGVolumeProfile[idx].ShowValueAreaLabels == showValueAreaLabels && cacheEGVolumeProfile[idx].ValueAreaLabelFontFamily == valueAreaLabelFontFamily && cacheEGVolumeProfile[idx].ValueAreaLabelFontSize == valueAreaLabelFontSize && cacheEGVolumeProfile[idx].ShowSecondaryValueArea == showSecondaryValueArea && cacheEGVolumeProfile[idx].SecondaryValueAreaPercent == secondaryValueAreaPercent && cacheEGVolumeProfile[idx].SecondaryValueAreaOpacity == secondaryValueAreaOpacity && cacheEGVolumeProfile[idx].ExtendSecondaryValueAreaLine == extendSecondaryValueAreaLine && cacheEGVolumeProfile[idx].SecondaryValueAreaLineWidthPixels == secondaryValueAreaLineWidthPixels && cacheEGVolumeProfile[idx].SecondaryValueAreaLineStyle == secondaryValueAreaLineStyle && cacheEGVolumeProfile[idx].SecondaryValueAreaLineOpacity == secondaryValueAreaLineOpacity && cacheEGVolumeProfile[idx].ShowSecondaryValueAreaLabels == showSecondaryValueAreaLabels && cacheEGVolumeProfile[idx].SecondaryValueAreaLabelFontFamily == secondaryValueAreaLabelFontFamily && cacheEGVolumeProfile[idx].SecondaryValueAreaLabelFontSize == secondaryValueAreaLabelFontSize && cacheEGVolumeProfile[idx].BuySellOpacity == buySellOpacity && cacheEGVolumeProfile[idx].DeltaLayoutRatio == deltaLayoutRatio && cacheEGVolumeProfile[idx].DeltaOpacity == deltaOpacity && cacheEGVolumeProfile[idx].ShowLargeOrders == showLargeOrders && cacheEGVolumeProfile[idx].LargeOrderThreshold == largeOrderThreshold && cacheEGVolumeProfile[idx].LargeOrderMaxPerRow == largeOrderMaxPerRow && cacheEGVolumeProfile[idx].LargeOrderSize == largeOrderSize && cacheEGVolumeProfile[idx].LargeOrderSpacing == largeOrderSpacing && cacheEGVolumeProfile[idx].ShowImbalance == showImbalance && cacheEGVolumeProfile[idx].ImbalanceThresholdPercent == imbalanceThresholdPercent && cacheEGVolumeProfile[idx].ProfileColor == profileColor && cacheEGVolumeProfile[idx].ValueAreaColor == valueAreaColor && cacheEGVolumeProfile[idx].SecondaryValueAreaColor == secondaryValueAreaColor && cacheEGVolumeProfile[idx].POCColor == pOCColor && cacheEGVolumeProfile[idx].SellColor == sellColor && cacheEGVolumeProfile[idx].BuyColor == buyColor && cacheEGVolumeProfile[idx].LargeSellColor == largeSellColor && cacheEGVolumeProfile[idx].LargeBuyColor == largeBuyColor && cacheEGVolumeProfile[idx].EqualsInput(input))
 						return cacheEGVolumeProfile[idx];
-			return CacheIndicator<EducatedGambling.EGVolumeProfile>(new EducatedGambling.EGVolumeProfile(){ TradingHoursTemplate = tradingHoursTemplate, SessionsToDisplay = sessionsToDisplay, TickAggregation = tickAggregation, BVCLookback = bVCLookback, IsolateDominantSide = isolateDominantSide, ShowPOC = showPOC, POCOpacity = pOCOpacity, ProfileWidthPercent = profileWidthPercent, ProfileOpacity = profileOpacity, ShowValueArea = showValueArea, ValueAreaPercent = valueAreaPercent, ValueAreaOpacity = valueAreaOpacity, ExtendValueAreaLine = extendValueAreaLine, ValueAreaLineWidthPixels = valueAreaLineWidthPixels, ValueAreaLineStyle = valueAreaLineStyle, ValueAreaLineOpacity = valueAreaLineOpacity, ShowValueAreaLabels = showValueAreaLabels, ValueAreaLabelFontFamily = valueAreaLabelFontFamily, ValueAreaLabelFontSize = valueAreaLabelFontSize, ShowSecondaryValueArea = showSecondaryValueArea, SecondaryValueAreaPercent = secondaryValueAreaPercent, SecondaryValueAreaOpacity = secondaryValueAreaOpacity, ExtendSecondaryValueAreaLine = extendSecondaryValueAreaLine, SecondaryValueAreaLineWidthPixels = secondaryValueAreaLineWidthPixels, SecondaryValueAreaLineStyle = secondaryValueAreaLineStyle, SecondaryValueAreaLineOpacity = secondaryValueAreaLineOpacity, ShowSecondaryValueAreaLabels = showSecondaryValueAreaLabels, SecondaryValueAreaLabelFontFamily = secondaryValueAreaLabelFontFamily, SecondaryValueAreaLabelFontSize = secondaryValueAreaLabelFontSize, DeltaLayoutRatio = deltaLayoutRatio, ShowLargeOrders = showLargeOrders, LargeOrderThreshold = largeOrderThreshold, LargeOrderMaxPerRow = largeOrderMaxPerRow, LargeOrderSize = largeOrderSize, LargeOrderSpacing = largeOrderSpacing, ShowImbalance = showImbalance, ImbalanceThresholdPercent = imbalanceThresholdPercent, ProfileColor = profileColor, ValueAreaColor = valueAreaColor, SecondaryValueAreaColor = secondaryValueAreaColor, POCColor = pOCColor, SellColor = sellColor, BuyColor = buyColor, LargeSellColor = largeSellColor, LargeBuyColor = largeBuyColor }, input, ref cacheEGVolumeProfile);
+			return CacheIndicator<EducatedGambling.EGVolumeProfile>(new EducatedGambling.EGVolumeProfile(){ TradingHoursTemplate = tradingHoursTemplate, SessionsToDisplay = sessionsToDisplay, TickAggregation = tickAggregation, BVCLookback = bVCLookback, IsolateDominantSide = isolateDominantSide, ShowPOC = showPOC, POCOpacity = pOCOpacity, ProfileWidthPercent = profileWidthPercent, ProfileOpacity = profileOpacity, ShowValueArea = showValueArea, ValueAreaPercent = valueAreaPercent, ValueAreaOpacity = valueAreaOpacity, ExtendValueAreaLine = extendValueAreaLine, ValueAreaLineWidthPixels = valueAreaLineWidthPixels, ValueAreaLineStyle = valueAreaLineStyle, ValueAreaLineOpacity = valueAreaLineOpacity, ShowValueAreaLabels = showValueAreaLabels, ValueAreaLabelFontFamily = valueAreaLabelFontFamily, ValueAreaLabelFontSize = valueAreaLabelFontSize, ShowSecondaryValueArea = showSecondaryValueArea, SecondaryValueAreaPercent = secondaryValueAreaPercent, SecondaryValueAreaOpacity = secondaryValueAreaOpacity, ExtendSecondaryValueAreaLine = extendSecondaryValueAreaLine, SecondaryValueAreaLineWidthPixels = secondaryValueAreaLineWidthPixels, SecondaryValueAreaLineStyle = secondaryValueAreaLineStyle, SecondaryValueAreaLineOpacity = secondaryValueAreaLineOpacity, ShowSecondaryValueAreaLabels = showSecondaryValueAreaLabels, SecondaryValueAreaLabelFontFamily = secondaryValueAreaLabelFontFamily, SecondaryValueAreaLabelFontSize = secondaryValueAreaLabelFontSize, BuySellOpacity = buySellOpacity, DeltaLayoutRatio = deltaLayoutRatio, DeltaOpacity = deltaOpacity, ShowLargeOrders = showLargeOrders, LargeOrderThreshold = largeOrderThreshold, LargeOrderMaxPerRow = largeOrderMaxPerRow, LargeOrderSize = largeOrderSize, LargeOrderSpacing = largeOrderSpacing, ShowImbalance = showImbalance, ImbalanceThresholdPercent = imbalanceThresholdPercent, ProfileColor = profileColor, ValueAreaColor = valueAreaColor, SecondaryValueAreaColor = secondaryValueAreaColor, POCColor = pOCColor, SellColor = sellColor, BuyColor = buyColor, LargeSellColor = largeSellColor, LargeBuyColor = largeBuyColor }, input, ref cacheEGVolumeProfile);
 		}
 	}
 }
@@ -1629,14 +1682,14 @@ namespace NinjaTrader.NinjaScript.MarketAnalyzerColumns
 {
 	public partial class MarketAnalyzerColumn : MarketAnalyzerColumnBase
 	{
-		public Indicators.EducatedGambling.EGVolumeProfile EGVolumeProfile(string tradingHoursTemplate, int sessionsToDisplay, int tickAggregation, int bVCLookback, bool isolateDominantSide, bool showPOC, double pOCOpacity, double profileWidthPercent, double profileOpacity, bool showValueArea, double valueAreaPercent, double valueAreaOpacity, bool extendValueAreaLine, int valueAreaLineWidthPixels, DashStyleHelper valueAreaLineStyle, double valueAreaLineOpacity, bool showValueAreaLabels, string valueAreaLabelFontFamily, double valueAreaLabelFontSize, bool showSecondaryValueArea, double secondaryValueAreaPercent, double secondaryValueAreaOpacity, bool extendSecondaryValueAreaLine, int secondaryValueAreaLineWidthPixels, DashStyleHelper secondaryValueAreaLineStyle, double secondaryValueAreaLineOpacity, bool showSecondaryValueAreaLabels, string secondaryValueAreaLabelFontFamily, double secondaryValueAreaLabelFontSize, double deltaLayoutRatio, bool showLargeOrders, int largeOrderThreshold, int largeOrderMaxPerRow, int largeOrderSize, int largeOrderSpacing, bool showImbalance, double imbalanceThresholdPercent, System.Windows.Media.Brush profileColor, System.Windows.Media.Brush valueAreaColor, System.Windows.Media.Brush secondaryValueAreaColor, System.Windows.Media.Brush pOCColor, System.Windows.Media.Brush sellColor, System.Windows.Media.Brush buyColor, System.Windows.Media.Brush largeSellColor, System.Windows.Media.Brush largeBuyColor)
+		public Indicators.EducatedGambling.EGVolumeProfile EGVolumeProfile(string tradingHoursTemplate, int sessionsToDisplay, int tickAggregation, int bVCLookback, bool isolateDominantSide, bool showPOC, double pOCOpacity, double profileWidthPercent, double profileOpacity, bool showValueArea, double valueAreaPercent, double valueAreaOpacity, bool extendValueAreaLine, int valueAreaLineWidthPixels, DashStyleHelper valueAreaLineStyle, double valueAreaLineOpacity, bool showValueAreaLabels, string valueAreaLabelFontFamily, double valueAreaLabelFontSize, bool showSecondaryValueArea, double secondaryValueAreaPercent, double secondaryValueAreaOpacity, bool extendSecondaryValueAreaLine, int secondaryValueAreaLineWidthPixels, DashStyleHelper secondaryValueAreaLineStyle, double secondaryValueAreaLineOpacity, bool showSecondaryValueAreaLabels, string secondaryValueAreaLabelFontFamily, double secondaryValueAreaLabelFontSize, double buySellOpacity, double deltaLayoutRatio, double deltaOpacity, bool showLargeOrders, int largeOrderThreshold, int largeOrderMaxPerRow, int largeOrderSize, int largeOrderSpacing, bool showImbalance, double imbalanceThresholdPercent, System.Windows.Media.Brush profileColor, System.Windows.Media.Brush valueAreaColor, System.Windows.Media.Brush secondaryValueAreaColor, System.Windows.Media.Brush pOCColor, System.Windows.Media.Brush sellColor, System.Windows.Media.Brush buyColor, System.Windows.Media.Brush largeSellColor, System.Windows.Media.Brush largeBuyColor)
 		{
-			return indicator.EGVolumeProfile(Input, tradingHoursTemplate, sessionsToDisplay, tickAggregation, bVCLookback, isolateDominantSide, showPOC, pOCOpacity, profileWidthPercent, profileOpacity, showValueArea, valueAreaPercent, valueAreaOpacity, extendValueAreaLine, valueAreaLineWidthPixels, valueAreaLineStyle, valueAreaLineOpacity, showValueAreaLabels, valueAreaLabelFontFamily, valueAreaLabelFontSize, showSecondaryValueArea, secondaryValueAreaPercent, secondaryValueAreaOpacity, extendSecondaryValueAreaLine, secondaryValueAreaLineWidthPixels, secondaryValueAreaLineStyle, secondaryValueAreaLineOpacity, showSecondaryValueAreaLabels, secondaryValueAreaLabelFontFamily, secondaryValueAreaLabelFontSize, deltaLayoutRatio, showLargeOrders, largeOrderThreshold, largeOrderMaxPerRow, largeOrderSize, largeOrderSpacing, showImbalance, imbalanceThresholdPercent, profileColor, valueAreaColor, secondaryValueAreaColor, pOCColor, sellColor, buyColor, largeSellColor, largeBuyColor);
+			return indicator.EGVolumeProfile(Input, tradingHoursTemplate, sessionsToDisplay, tickAggregation, bVCLookback, isolateDominantSide, showPOC, pOCOpacity, profileWidthPercent, profileOpacity, showValueArea, valueAreaPercent, valueAreaOpacity, extendValueAreaLine, valueAreaLineWidthPixels, valueAreaLineStyle, valueAreaLineOpacity, showValueAreaLabels, valueAreaLabelFontFamily, valueAreaLabelFontSize, showSecondaryValueArea, secondaryValueAreaPercent, secondaryValueAreaOpacity, extendSecondaryValueAreaLine, secondaryValueAreaLineWidthPixels, secondaryValueAreaLineStyle, secondaryValueAreaLineOpacity, showSecondaryValueAreaLabels, secondaryValueAreaLabelFontFamily, secondaryValueAreaLabelFontSize, buySellOpacity, deltaLayoutRatio, deltaOpacity, showLargeOrders, largeOrderThreshold, largeOrderMaxPerRow, largeOrderSize, largeOrderSpacing, showImbalance, imbalanceThresholdPercent, profileColor, valueAreaColor, secondaryValueAreaColor, pOCColor, sellColor, buyColor, largeSellColor, largeBuyColor);
 		}
 
-		public Indicators.EducatedGambling.EGVolumeProfile EGVolumeProfile(ISeries<double> input , string tradingHoursTemplate, int sessionsToDisplay, int tickAggregation, int bVCLookback, bool isolateDominantSide, bool showPOC, double pOCOpacity, double profileWidthPercent, double profileOpacity, bool showValueArea, double valueAreaPercent, double valueAreaOpacity, bool extendValueAreaLine, int valueAreaLineWidthPixels, DashStyleHelper valueAreaLineStyle, double valueAreaLineOpacity, bool showValueAreaLabels, string valueAreaLabelFontFamily, double valueAreaLabelFontSize, bool showSecondaryValueArea, double secondaryValueAreaPercent, double secondaryValueAreaOpacity, bool extendSecondaryValueAreaLine, int secondaryValueAreaLineWidthPixels, DashStyleHelper secondaryValueAreaLineStyle, double secondaryValueAreaLineOpacity, bool showSecondaryValueAreaLabels, string secondaryValueAreaLabelFontFamily, double secondaryValueAreaLabelFontSize, double deltaLayoutRatio, bool showLargeOrders, int largeOrderThreshold, int largeOrderMaxPerRow, int largeOrderSize, int largeOrderSpacing, bool showImbalance, double imbalanceThresholdPercent, System.Windows.Media.Brush profileColor, System.Windows.Media.Brush valueAreaColor, System.Windows.Media.Brush secondaryValueAreaColor, System.Windows.Media.Brush pOCColor, System.Windows.Media.Brush sellColor, System.Windows.Media.Brush buyColor, System.Windows.Media.Brush largeSellColor, System.Windows.Media.Brush largeBuyColor)
+		public Indicators.EducatedGambling.EGVolumeProfile EGVolumeProfile(ISeries<double> input , string tradingHoursTemplate, int sessionsToDisplay, int tickAggregation, int bVCLookback, bool isolateDominantSide, bool showPOC, double pOCOpacity, double profileWidthPercent, double profileOpacity, bool showValueArea, double valueAreaPercent, double valueAreaOpacity, bool extendValueAreaLine, int valueAreaLineWidthPixels, DashStyleHelper valueAreaLineStyle, double valueAreaLineOpacity, bool showValueAreaLabels, string valueAreaLabelFontFamily, double valueAreaLabelFontSize, bool showSecondaryValueArea, double secondaryValueAreaPercent, double secondaryValueAreaOpacity, bool extendSecondaryValueAreaLine, int secondaryValueAreaLineWidthPixels, DashStyleHelper secondaryValueAreaLineStyle, double secondaryValueAreaLineOpacity, bool showSecondaryValueAreaLabels, string secondaryValueAreaLabelFontFamily, double secondaryValueAreaLabelFontSize, double buySellOpacity, double deltaLayoutRatio, double deltaOpacity, bool showLargeOrders, int largeOrderThreshold, int largeOrderMaxPerRow, int largeOrderSize, int largeOrderSpacing, bool showImbalance, double imbalanceThresholdPercent, System.Windows.Media.Brush profileColor, System.Windows.Media.Brush valueAreaColor, System.Windows.Media.Brush secondaryValueAreaColor, System.Windows.Media.Brush pOCColor, System.Windows.Media.Brush sellColor, System.Windows.Media.Brush buyColor, System.Windows.Media.Brush largeSellColor, System.Windows.Media.Brush largeBuyColor)
 		{
-			return indicator.EGVolumeProfile(input, tradingHoursTemplate, sessionsToDisplay, tickAggregation, bVCLookback, isolateDominantSide, showPOC, pOCOpacity, profileWidthPercent, profileOpacity, showValueArea, valueAreaPercent, valueAreaOpacity, extendValueAreaLine, valueAreaLineWidthPixels, valueAreaLineStyle, valueAreaLineOpacity, showValueAreaLabels, valueAreaLabelFontFamily, valueAreaLabelFontSize, showSecondaryValueArea, secondaryValueAreaPercent, secondaryValueAreaOpacity, extendSecondaryValueAreaLine, secondaryValueAreaLineWidthPixels, secondaryValueAreaLineStyle, secondaryValueAreaLineOpacity, showSecondaryValueAreaLabels, secondaryValueAreaLabelFontFamily, secondaryValueAreaLabelFontSize, deltaLayoutRatio, showLargeOrders, largeOrderThreshold, largeOrderMaxPerRow, largeOrderSize, largeOrderSpacing, showImbalance, imbalanceThresholdPercent, profileColor, valueAreaColor, secondaryValueAreaColor, pOCColor, sellColor, buyColor, largeSellColor, largeBuyColor);
+			return indicator.EGVolumeProfile(input, tradingHoursTemplate, sessionsToDisplay, tickAggregation, bVCLookback, isolateDominantSide, showPOC, pOCOpacity, profileWidthPercent, profileOpacity, showValueArea, valueAreaPercent, valueAreaOpacity, extendValueAreaLine, valueAreaLineWidthPixels, valueAreaLineStyle, valueAreaLineOpacity, showValueAreaLabels, valueAreaLabelFontFamily, valueAreaLabelFontSize, showSecondaryValueArea, secondaryValueAreaPercent, secondaryValueAreaOpacity, extendSecondaryValueAreaLine, secondaryValueAreaLineWidthPixels, secondaryValueAreaLineStyle, secondaryValueAreaLineOpacity, showSecondaryValueAreaLabels, secondaryValueAreaLabelFontFamily, secondaryValueAreaLabelFontSize, buySellOpacity, deltaLayoutRatio, deltaOpacity, showLargeOrders, largeOrderThreshold, largeOrderMaxPerRow, largeOrderSize, largeOrderSpacing, showImbalance, imbalanceThresholdPercent, profileColor, valueAreaColor, secondaryValueAreaColor, pOCColor, sellColor, buyColor, largeSellColor, largeBuyColor);
 		}
 	}
 }
@@ -1645,14 +1698,14 @@ namespace NinjaTrader.NinjaScript.Strategies
 {
 	public partial class Strategy : NinjaTrader.Gui.NinjaScript.StrategyRenderBase
 	{
-		public Indicators.EducatedGambling.EGVolumeProfile EGVolumeProfile(string tradingHoursTemplate, int sessionsToDisplay, int tickAggregation, int bVCLookback, bool isolateDominantSide, bool showPOC, double pOCOpacity, double profileWidthPercent, double profileOpacity, bool showValueArea, double valueAreaPercent, double valueAreaOpacity, bool extendValueAreaLine, int valueAreaLineWidthPixels, DashStyleHelper valueAreaLineStyle, double valueAreaLineOpacity, bool showValueAreaLabels, string valueAreaLabelFontFamily, double valueAreaLabelFontSize, bool showSecondaryValueArea, double secondaryValueAreaPercent, double secondaryValueAreaOpacity, bool extendSecondaryValueAreaLine, int secondaryValueAreaLineWidthPixels, DashStyleHelper secondaryValueAreaLineStyle, double secondaryValueAreaLineOpacity, bool showSecondaryValueAreaLabels, string secondaryValueAreaLabelFontFamily, double secondaryValueAreaLabelFontSize, double deltaLayoutRatio, bool showLargeOrders, int largeOrderThreshold, int largeOrderMaxPerRow, int largeOrderSize, int largeOrderSpacing, bool showImbalance, double imbalanceThresholdPercent, System.Windows.Media.Brush profileColor, System.Windows.Media.Brush valueAreaColor, System.Windows.Media.Brush secondaryValueAreaColor, System.Windows.Media.Brush pOCColor, System.Windows.Media.Brush sellColor, System.Windows.Media.Brush buyColor, System.Windows.Media.Brush largeSellColor, System.Windows.Media.Brush largeBuyColor)
+		public Indicators.EducatedGambling.EGVolumeProfile EGVolumeProfile(string tradingHoursTemplate, int sessionsToDisplay, int tickAggregation, int bVCLookback, bool isolateDominantSide, bool showPOC, double pOCOpacity, double profileWidthPercent, double profileOpacity, bool showValueArea, double valueAreaPercent, double valueAreaOpacity, bool extendValueAreaLine, int valueAreaLineWidthPixels, DashStyleHelper valueAreaLineStyle, double valueAreaLineOpacity, bool showValueAreaLabels, string valueAreaLabelFontFamily, double valueAreaLabelFontSize, bool showSecondaryValueArea, double secondaryValueAreaPercent, double secondaryValueAreaOpacity, bool extendSecondaryValueAreaLine, int secondaryValueAreaLineWidthPixels, DashStyleHelper secondaryValueAreaLineStyle, double secondaryValueAreaLineOpacity, bool showSecondaryValueAreaLabels, string secondaryValueAreaLabelFontFamily, double secondaryValueAreaLabelFontSize, double buySellOpacity, double deltaLayoutRatio, double deltaOpacity, bool showLargeOrders, int largeOrderThreshold, int largeOrderMaxPerRow, int largeOrderSize, int largeOrderSpacing, bool showImbalance, double imbalanceThresholdPercent, System.Windows.Media.Brush profileColor, System.Windows.Media.Brush valueAreaColor, System.Windows.Media.Brush secondaryValueAreaColor, System.Windows.Media.Brush pOCColor, System.Windows.Media.Brush sellColor, System.Windows.Media.Brush buyColor, System.Windows.Media.Brush largeSellColor, System.Windows.Media.Brush largeBuyColor)
 		{
-			return indicator.EGVolumeProfile(Input, tradingHoursTemplate, sessionsToDisplay, tickAggregation, bVCLookback, isolateDominantSide, showPOC, pOCOpacity, profileWidthPercent, profileOpacity, showValueArea, valueAreaPercent, valueAreaOpacity, extendValueAreaLine, valueAreaLineWidthPixels, valueAreaLineStyle, valueAreaLineOpacity, showValueAreaLabels, valueAreaLabelFontFamily, valueAreaLabelFontSize, showSecondaryValueArea, secondaryValueAreaPercent, secondaryValueAreaOpacity, extendSecondaryValueAreaLine, secondaryValueAreaLineWidthPixels, secondaryValueAreaLineStyle, secondaryValueAreaLineOpacity, showSecondaryValueAreaLabels, secondaryValueAreaLabelFontFamily, secondaryValueAreaLabelFontSize, deltaLayoutRatio, showLargeOrders, largeOrderThreshold, largeOrderMaxPerRow, largeOrderSize, largeOrderSpacing, showImbalance, imbalanceThresholdPercent, profileColor, valueAreaColor, secondaryValueAreaColor, pOCColor, sellColor, buyColor, largeSellColor, largeBuyColor);
+			return indicator.EGVolumeProfile(Input, tradingHoursTemplate, sessionsToDisplay, tickAggregation, bVCLookback, isolateDominantSide, showPOC, pOCOpacity, profileWidthPercent, profileOpacity, showValueArea, valueAreaPercent, valueAreaOpacity, extendValueAreaLine, valueAreaLineWidthPixels, valueAreaLineStyle, valueAreaLineOpacity, showValueAreaLabels, valueAreaLabelFontFamily, valueAreaLabelFontSize, showSecondaryValueArea, secondaryValueAreaPercent, secondaryValueAreaOpacity, extendSecondaryValueAreaLine, secondaryValueAreaLineWidthPixels, secondaryValueAreaLineStyle, secondaryValueAreaLineOpacity, showSecondaryValueAreaLabels, secondaryValueAreaLabelFontFamily, secondaryValueAreaLabelFontSize, buySellOpacity, deltaLayoutRatio, deltaOpacity, showLargeOrders, largeOrderThreshold, largeOrderMaxPerRow, largeOrderSize, largeOrderSpacing, showImbalance, imbalanceThresholdPercent, profileColor, valueAreaColor, secondaryValueAreaColor, pOCColor, sellColor, buyColor, largeSellColor, largeBuyColor);
 		}
 
-		public Indicators.EducatedGambling.EGVolumeProfile EGVolumeProfile(ISeries<double> input , string tradingHoursTemplate, int sessionsToDisplay, int tickAggregation, int bVCLookback, bool isolateDominantSide, bool showPOC, double pOCOpacity, double profileWidthPercent, double profileOpacity, bool showValueArea, double valueAreaPercent, double valueAreaOpacity, bool extendValueAreaLine, int valueAreaLineWidthPixels, DashStyleHelper valueAreaLineStyle, double valueAreaLineOpacity, bool showValueAreaLabels, string valueAreaLabelFontFamily, double valueAreaLabelFontSize, bool showSecondaryValueArea, double secondaryValueAreaPercent, double secondaryValueAreaOpacity, bool extendSecondaryValueAreaLine, int secondaryValueAreaLineWidthPixels, DashStyleHelper secondaryValueAreaLineStyle, double secondaryValueAreaLineOpacity, bool showSecondaryValueAreaLabels, string secondaryValueAreaLabelFontFamily, double secondaryValueAreaLabelFontSize, double deltaLayoutRatio, bool showLargeOrders, int largeOrderThreshold, int largeOrderMaxPerRow, int largeOrderSize, int largeOrderSpacing, bool showImbalance, double imbalanceThresholdPercent, System.Windows.Media.Brush profileColor, System.Windows.Media.Brush valueAreaColor, System.Windows.Media.Brush secondaryValueAreaColor, System.Windows.Media.Brush pOCColor, System.Windows.Media.Brush sellColor, System.Windows.Media.Brush buyColor, System.Windows.Media.Brush largeSellColor, System.Windows.Media.Brush largeBuyColor)
+		public Indicators.EducatedGambling.EGVolumeProfile EGVolumeProfile(ISeries<double> input , string tradingHoursTemplate, int sessionsToDisplay, int tickAggregation, int bVCLookback, bool isolateDominantSide, bool showPOC, double pOCOpacity, double profileWidthPercent, double profileOpacity, bool showValueArea, double valueAreaPercent, double valueAreaOpacity, bool extendValueAreaLine, int valueAreaLineWidthPixels, DashStyleHelper valueAreaLineStyle, double valueAreaLineOpacity, bool showValueAreaLabels, string valueAreaLabelFontFamily, double valueAreaLabelFontSize, bool showSecondaryValueArea, double secondaryValueAreaPercent, double secondaryValueAreaOpacity, bool extendSecondaryValueAreaLine, int secondaryValueAreaLineWidthPixels, DashStyleHelper secondaryValueAreaLineStyle, double secondaryValueAreaLineOpacity, bool showSecondaryValueAreaLabels, string secondaryValueAreaLabelFontFamily, double secondaryValueAreaLabelFontSize, double buySellOpacity, double deltaLayoutRatio, double deltaOpacity, bool showLargeOrders, int largeOrderThreshold, int largeOrderMaxPerRow, int largeOrderSize, int largeOrderSpacing, bool showImbalance, double imbalanceThresholdPercent, System.Windows.Media.Brush profileColor, System.Windows.Media.Brush valueAreaColor, System.Windows.Media.Brush secondaryValueAreaColor, System.Windows.Media.Brush pOCColor, System.Windows.Media.Brush sellColor, System.Windows.Media.Brush buyColor, System.Windows.Media.Brush largeSellColor, System.Windows.Media.Brush largeBuyColor)
 		{
-			return indicator.EGVolumeProfile(input, tradingHoursTemplate, sessionsToDisplay, tickAggregation, bVCLookback, isolateDominantSide, showPOC, pOCOpacity, profileWidthPercent, profileOpacity, showValueArea, valueAreaPercent, valueAreaOpacity, extendValueAreaLine, valueAreaLineWidthPixels, valueAreaLineStyle, valueAreaLineOpacity, showValueAreaLabels, valueAreaLabelFontFamily, valueAreaLabelFontSize, showSecondaryValueArea, secondaryValueAreaPercent, secondaryValueAreaOpacity, extendSecondaryValueAreaLine, secondaryValueAreaLineWidthPixels, secondaryValueAreaLineStyle, secondaryValueAreaLineOpacity, showSecondaryValueAreaLabels, secondaryValueAreaLabelFontFamily, secondaryValueAreaLabelFontSize, deltaLayoutRatio, showLargeOrders, largeOrderThreshold, largeOrderMaxPerRow, largeOrderSize, largeOrderSpacing, showImbalance, imbalanceThresholdPercent, profileColor, valueAreaColor, secondaryValueAreaColor, pOCColor, sellColor, buyColor, largeSellColor, largeBuyColor);
+			return indicator.EGVolumeProfile(input, tradingHoursTemplate, sessionsToDisplay, tickAggregation, bVCLookback, isolateDominantSide, showPOC, pOCOpacity, profileWidthPercent, profileOpacity, showValueArea, valueAreaPercent, valueAreaOpacity, extendValueAreaLine, valueAreaLineWidthPixels, valueAreaLineStyle, valueAreaLineOpacity, showValueAreaLabels, valueAreaLabelFontFamily, valueAreaLabelFontSize, showSecondaryValueArea, secondaryValueAreaPercent, secondaryValueAreaOpacity, extendSecondaryValueAreaLine, secondaryValueAreaLineWidthPixels, secondaryValueAreaLineStyle, secondaryValueAreaLineOpacity, showSecondaryValueAreaLabels, secondaryValueAreaLabelFontFamily, secondaryValueAreaLabelFontSize, buySellOpacity, deltaLayoutRatio, deltaOpacity, showLargeOrders, largeOrderThreshold, largeOrderMaxPerRow, largeOrderSize, largeOrderSpacing, showImbalance, imbalanceThresholdPercent, profileColor, valueAreaColor, secondaryValueAreaColor, pOCColor, sellColor, buyColor, largeSellColor, largeBuyColor);
 		}
 	}
 }

@@ -33,8 +33,6 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
         private static readonly TimeSpan RthEnd = new TimeSpan(16, 0, 0);
         private static readonly TimeZoneInfo EasternTz = TimeZoneInfo.FindSystemTimeZoneById("Eastern Standard Time");
 
-        private double currentBid;
-        private double currentAsk;
         private double lastLastPrice;
 
         private readonly Dictionary<double, double> buyUsdByPrice = new Dictionary<double, double>();
@@ -108,9 +106,13 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
             }
             else if (State == State.Configure)
             {
-                AddDataSeries(Instrument.FullName, BarsPeriodType.Tick, 1, MarketDataType.Last);
-                AddDataSeries(Instrument.FullName, BarsPeriodType.Tick, 1, MarketDataType.Bid);
-                AddDataSeries(Instrument.FullName, BarsPeriodType.Tick, 1, MarketDataType.Ask);
+                // Single hidden series (Last only) — historical ask/bid comes from this same tick
+                // record via BarsArray[1].GetAsk/GetBid; live ask/bid comes from OnMarketData
+                // instead. See root CLAUDE.md "Better technique" under "Classifying buy vs sell
+                // aggressor" — supersedes the old three-series (Last/Bid/Ask) approach this file
+                // used to use, confirmed against a third-party indicator (VolumeDetector.cs) that
+                // matches NinjaTrader's native Order Flow+ Trade Detector.
+                AddDataSeries(Instrument.FullName, BarsPeriodType.Tick, 1);
             }
             else if (State == State.DataLoaded)
             {
@@ -200,32 +202,58 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
                 return;
             }
 
-            if (BarsInProgress == 2)
-            {
-                currentBid = Close[0];
+            // The hidden tick series (BarsInProgress == 1) is only acted on during
+            // State.Historical — historical ask/bid comes from that same tick record (see
+            // ProcessHistoricalTick). Once live, it keeps ticking in the background but is
+            // ignored; OnMarketData below takes over instead, since it hands us the feed's own
+            // trade-synchronized Ask/Bid directly. See root CLAUDE.md "Better technique" under
+            // "Classifying buy vs sell aggressor" for the full writeup.
+            if (BarsInProgress == 1 && State == State.Historical)
+                ProcessHistoricalTick();
+        }
+
+        private void ProcessHistoricalTick()
+        {
+            if (CurrentBars[1] < 0)
                 return;
-            }
 
-            if (BarsInProgress == 3)
-            {
-                currentAsk = Close[0];
+            double price = BarsArray[1].GetClose(CurrentBars[1]);
+            double size = BarsArray[1].GetVolume(CurrentBars[1]);
+            double ask = Instrument.MasterInstrument.RoundToTickSize(BarsArray[1].GetAsk(CurrentBars[1]));
+            double bid = Instrument.MasterInstrument.RoundToTickSize(BarsArray[1].GetBid(CurrentBars[1]));
+            DateTime tickTime = BarsArray[1].GetTime(CurrentBars[1]);
+
+            ProcessTrade(price, size, ask, bid, tickTime);
+        }
+
+        // Live trade-synchronized classification: OnMarketData hands us the feed's own Ask/Bid for
+        // THIS specific trade event directly — no hidden series needed at all in real time.
+        protected override void OnMarketData(MarketDataEventArgs marketData)
+        {
+            if (State != State.Realtime || marketData.MarketDataType != MarketDataType.Last)
                 return;
-            }
 
-            if (BarsInProgress != 1) return;
+            double ask = Instrument.MasterInstrument.RoundToTickSize(marketData.Ask);
+            double bid = Instrument.MasterInstrument.RoundToTickSize(marketData.Bid);
 
-            double price = Close[0];
-            double size = Volume[0];
+            ProcessTrade(marketData.Price, marketData.Volume, ask, bid, marketData.Time);
+        }
 
-            if (SessionFilter == EGDollarVolumeProfileSessionFilter.RTH && !IsInsideRth(Time[0]))
+        // Shared classification + accumulation for both the historical (ProcessHistoricalTick) and
+        // live (OnMarketData) paths. Quote rule first (ask/bid from the trade's own record, not a
+        // separately-ticking series), tick rule as a fallback when neither side is decisively
+        // crossed — unchanged from the original behavior, just fed trade-synchronized ask/bid now.
+        private void ProcessTrade(double price, double size, double ask, double bid, DateTime tickTime)
+        {
+            if (SessionFilter == EGDollarVolumeProfileSessionFilter.RTH && !IsInsideRth(tickTime))
             {
                 lastLastPrice = price;
                 return;
             }
 
             bool? isBuy = null;
-            if (currentAsk > 0 && price >= currentAsk) isBuy = true;
-            else if (currentBid > 0 && price <= currentBid) isBuy = false;
+            if (ask > 0 && price >= ask) isBuy = true;
+            else if (bid > 0 && price <= bid) isBuy = false;
             else if (lastLastPrice > 0)
             {
                 if (price > lastLastPrice) isBuy = true;

@@ -43,8 +43,6 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
             public double LargeSizeRatio;
         }
 
-        private double currentBid;
-        private double currentAsk;
         private Dictionary<int, List<PendingTrade>> pendingByBar;
         private List<ConfirmedTrade> confirmedTrades;
 
@@ -63,7 +61,7 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
         {
             if (State == State.SetDefaults)
             {
-                Description = "Marks individual trade prints on the chart at their exact price, colored by buy/sell side and scaled in opacity by relative size within the bar. Standard trades can optionally extend rightward by strength with a fading tail. Large trades get their own color and can render as filled or unfilled bubbles instead of lines. Uses a hidden 1-tick data series — no Tick Replay required.";
+                Description = "Marks individual trade prints on the chart at their exact price, colored by buy/sell side and scaled in opacity by relative size within the bar. Standard trades can optionally extend rightward by strength with a fading tail. Large trades get their own color and can render as filled or unfilled bubbles instead of lines. Uses a single hidden 1-tick data series for historical trade-synchronized bid/ask, and live market data for real-time — no Tick Replay required.";
                 Name = "EGOrderFlowOverlay";
                 Calculate = Calculate.OnBarClose;
                 IsOverlay = true;
@@ -94,14 +92,18 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
             }
             else if (State == State.Configure)
             {
-                AddDataSeries(Instrument.FullName, BarsPeriodType.Tick, 1, MarketDataType.Last);
-                AddDataSeries(Instrument.FullName, BarsPeriodType.Tick, 1, MarketDataType.Bid);
-                AddDataSeries(Instrument.FullName, BarsPeriodType.Tick, 1, MarketDataType.Ask);
+                // Only ONE hidden series now (Last, no MarketDataType.Bid/Ask series). Historical
+                // ticks read their bid/ask straight off this same tick record via
+                // BarsArray[1].GetAsk/GetBid — the quote NT8 stored WITH that specific trade, not
+                // a separately-ticking series that can be stale relative to it. This is the
+                // official NT8 FootPrintV2-sample technique, confirmed against a third-party
+                // indicator (VolumeDetector.cs) that matches NinjaTrader's own Order Flow+ Trade
+                // Detector, unlike this file's old three-series (Last/Bid/Ask) approach. See the
+                // "Historical trade-print (tick-level) data" section of the root CLAUDE.md.
+                AddDataSeries(Instrument.FullName, BarsPeriodType.Tick, 1);
             }
             else if (State == State.DataLoaded)
             {
-                currentBid = double.NaN;
-                currentAsk = double.NaN;
                 pendingByBar = new Dictionary<int, List<PendingTrade>>();
                 confirmedTrades = new List<ConfirmedTrade>();
                 sessionMaxStandardSize = 0;
@@ -117,49 +119,21 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
 
         protected override void OnBarUpdate()
         {
-            if (BarsInProgress == 2)
-            {
-                currentBid = Close[0];
-                return;
-            }
-
-            if (BarsInProgress == 3)
-            {
-                currentAsk = Close[0];
-                return;
-            }
-
+            // The hidden tick series (BarsInProgress == 1) is only acted on during State.Historical
+            // — historical bid/ask comes from that same tick record (see ProcessHistoricalTick).
+            // Once live, it keeps ticking in the background but is ignored; OnMarketData below
+            // takes over instead, since it hands us the feed's own trade-synchronized Ask/Bid
+            // directly, without needing a hidden series at all. Splitting it this way (rather than
+            // acting on both) avoids double-queuing the same live trade from two different hooks.
             if (BarsInProgress == 1)
             {
-                double price = Close[0];
-                double size = Volume[0];
-
-                if (CurrentBars[0] >= 0 && size >= TradeThreshold &&
-                    !double.IsNaN(currentAsk) && !double.IsNaN(currentBid) && currentAsk > currentBid &&
-                    (price >= currentAsk || price <= currentBid))
-                {
-                    bool isBuy = price >= currentAsk;
-                    bool isLarge = EnableLargeTradeDetection && size >= LargeTradeThreshold;
-
-                    // If this tick happened after the current known bar's own close time,
-                    // it actually belongs to the next bar, which hasn't closed (or been
-                    // indexed by CurrentBars[0]) yet.
-                    int targetBar = (Time[0] <= Times[0][0]) ? CurrentBars[0] : CurrentBars[0] + 1;
-
-                    List<PendingTrade> list;
-                    if (!pendingByBar.TryGetValue(targetBar, out list))
-                    {
-                        list = new List<PendingTrade>();
-                        pendingByBar[targetBar] = list;
-                    }
-                    list.Add(new PendingTrade { Price = price, Size = size, IsBuy = isBuy, IsLarge = isLarge });
-
-                    Print(string.Format("[EGOrderFlowOverlay] Trade queued: TargetBar {0} Time {1} Price {2} Size {3} Side {4} Large {5} Bid {6} Ask {7}",
-                        targetBar, Time[0], price, size, isBuy ? "BUY" : "SELL", isLarge, currentBid, currentAsk));
-                }
-
+                if (State == State.Historical)
+                    ProcessHistoricalTick();
                 return;
             }
+
+            if (CurrentBars[0] < 0)
+                return;
 
             // Reset the Strength reference at the start of each new session (per the chart's
             // Trading Hours template) rather than never, so a stale running high from a prior,
@@ -173,6 +147,78 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
                 sessionMaxStandardSize = 0;
 
             FlushPendingTrades();
+        }
+
+        // Historical trade-synchronized classification: read price/size/ask/bid straight off the
+        // hidden tick series' OWN record for this trade, instead of comparing against a
+        // separately-ticking Bid/Ask series that can be stale relative to it. This is the same
+        // technique NinjaTrader's own official FootPrintV2 sample uses, confirmed against a
+        // third-party indicator (VolumeDetector.cs) that matches the native Order Flow+ Trade
+        // Detector — see the root CLAUDE.md for the full writeup of why the old three-series
+        // approach could misclassify or miss trades near the spread.
+        private void ProcessHistoricalTick()
+        {
+            if (CurrentBars[1] < 0 || CurrentBars[0] < 0)
+                return;
+
+            double price = Instrument.MasterInstrument.RoundToTickSize(BarsArray[1].GetClose(CurrentBars[1]));
+            double size = BarsArray[1].GetVolume(CurrentBars[1]);
+            double ask = Instrument.MasterInstrument.RoundToTickSize(BarsArray[1].GetAsk(CurrentBars[1]));
+            double bid = Instrument.MasterInstrument.RoundToTickSize(BarsArray[1].GetBid(CurrentBars[1]));
+            DateTime tickTime = BarsArray[1].GetTime(CurrentBars[1]);
+
+            // If this tick happened after the current known bar's own close time, it actually
+            // belongs to the next bar, which hasn't closed (or been indexed by CurrentBars[0]) yet.
+            int targetBar = (tickTime <= Times[0][0]) ? CurrentBars[0] : CurrentBars[0] + 1;
+
+            QueueTrade(price, size, ask, bid, tickTime, targetBar);
+        }
+
+        // Live trade-synchronized classification: OnMarketData hands us the feed's own Ask/Bid for
+        // THIS specific trade event directly — no hidden series needed at all in real time. Fires
+        // independently of the Calculate property (unlike OnBarUpdate), so this reacts to every
+        // qualifying trade immediately rather than waiting for a bar close.
+        protected override void OnMarketData(MarketDataEventArgs marketData)
+        {
+            if (State != State.Realtime || marketData.MarketDataType != MarketDataType.Last)
+                return;
+
+            if (CurrentBars[0] < 0)
+                return;
+
+            double price = Instrument.MasterInstrument.RoundToTickSize(marketData.Price);
+            double ask = Instrument.MasterInstrument.RoundToTickSize(marketData.Ask);
+            double bid = Instrument.MasterInstrument.RoundToTickSize(marketData.Bid);
+
+            QueueTrade(price, marketData.Volume, ask, bid, marketData.Time, CurrentBars[0]);
+        }
+
+        // Shared classification + queueing for both the historical (ProcessHistoricalTick) and
+        // live (OnMarketData) paths, so the quote rule and pending-trade bookkeeping only exist
+        // once. ask <= bid is a sanity guard against missing/crossed quote data (e.g. before the
+        // feed has any book yet), not the old "not trade-synchronized" caveat — that's now moot
+        // since ask/bid always come from the same record as the trade itself.
+        private void QueueTrade(double price, double size, double ask, double bid, DateTime tickTime, int targetBar)
+        {
+            if (targetBar < 0 || size < TradeThreshold || ask <= bid)
+                return;
+
+            if (!(price >= ask || price <= bid))
+                return; // between the spread — ambiguous, skip
+
+            bool isBuy = price >= ask;
+            bool isLarge = EnableLargeTradeDetection && size >= LargeTradeThreshold;
+
+            List<PendingTrade> list;
+            if (!pendingByBar.TryGetValue(targetBar, out list))
+            {
+                list = new List<PendingTrade>();
+                pendingByBar[targetBar] = list;
+            }
+            list.Add(new PendingTrade { Price = price, Size = size, IsBuy = isBuy, IsLarge = isLarge });
+
+            Print(string.Format("[EGOrderFlowOverlay] Trade queued: TargetBar {0} Time {1} Price {2} Size {3} Side {4} Large {5} Bid {6} Ask {7}",
+                targetBar, tickTime, price, size, isBuy ? "BUY" : "SELL", isLarge, bid, ask));
         }
 
         private void FlushPendingTrades()
