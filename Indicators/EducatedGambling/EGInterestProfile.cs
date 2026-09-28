@@ -36,13 +36,23 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
     // discarded. This keeps memory bounded by (days x price levels) instead of (total ticks
     // across N days), which matters at this timescale.
     //
-    // New-session detection reuses EGDollarVolumeProfile's proven Bars.IsFirstBarOfSession check
-    // (BarsInProgress == 0), guarded to fire once per session via lastSessionFirstBarIndex.
-    // Calculate.OnEachTick (matching EGDollarVolumeProfile, not EGRollingVolumeProfile's
-    // OnBarClose) makes that flag observable from the very first tick of the new session's first
-    // bar, minimizing - though not perfectly eliminating - the chance a boundary tick lands in
-    // the wrong day's bucket if it arrives before the new bucket opens. At this timescale a
-    // handful of misattributed boundary ticks is immaterial.
+    // New-session detection: HISTORICAL day-buckets open from the HIDDEN TICK SERIES' own
+    // Bars.IsFirstBarOfSession, checked inside ProcessHistoricalTick where Bars correctly
+    // resolves to BarsArray[1] (BarsInProgress == 1 there) - not the primary series'. During
+    // bulk historical replay the primary series and the hidden tick series are two independent
+    // streams whose OnBarUpdate callbacks aren't guaranteed to interleave in true chronological
+    // lockstep; deciding "new session" from one series while counting trades from the other let
+    // a handful of trades right at a session boundary get processed before the "new session"
+    // signal had fired - on a fast, sharp session-open move that's not a handful, it's the whole
+    // opening thrust, silently undercounting the true LOW (confirmed: worse on coarser chart
+    // periods, which have fewer primary-bar close events near the boundary to catch the primary
+    // series' own state up). Checking the tick series' own flag makes session detection and
+    // trade processing come from the exact same stream in the exact same order, eliminating the
+    // race entirely. LIVE day-buckets still open from the primary series' own
+    // Bars.IsFirstBarOfSession (OnBarUpdate, BarsInProgress == 0, gated to State.Realtime,
+    // guarded via lastSessionFirstBarIndex) - live ticks arrive one at a time in genuine
+    // chronological order, so this race is specific to bulk historical replay and doesn't apply
+    // there.
     //
     // Profile Anchor: Current Bar (default) pins the profile's pivot to the right of the last
     // bar via GetXByBarIndex + Bar-profile Right Offset (px) - a bar-index position, so scrolling
@@ -156,6 +166,7 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
 
         private double lastLastPrice;
         private int lastSessionFirstBarIndex = -1;
+        private int lastSessionFirstTickBarIndex = -1;
 
         private readonly List<DayBucket> dayBuckets = new List<DayBucket>();
         private readonly Dictionary<double, double> buyUsdByPrice = new Dictionary<double, double>();
@@ -276,6 +287,7 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
                 sellUsdByPrice.Clear();
                 lastLastPrice = 0;
                 lastSessionFirstBarIndex = -1;
+                lastSessionFirstTickBarIndex = -1;
             }
             else if (State == State.Terminated)
             {
@@ -338,7 +350,12 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
         {
             if (BarsInProgress == 0)
             {
-                if (Bars.IsFirstBarOfSession && CurrentBars[0] != lastSessionFirstBarIndex)
+                // Historical day-buckets open from ProcessHistoricalTick instead (the hidden
+                // tick series' own IsFirstBarOfSession, not this one) - see the class-level
+                // "New-session detection" doc comment for why. Live ticks arrive one at a time
+                // in genuine chronological order with the primary series, so the cross-series
+                // race that motivated moving the historical path doesn't apply here.
+                if (State == State.Realtime && Bars.IsFirstBarOfSession && CurrentBars[0] != lastSessionFirstBarIndex)
                 {
                     lastSessionFirstBarIndex = CurrentBars[0];
                     StartNewDayBucket(CurrentBars[0]);
@@ -395,6 +412,17 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
         {
             if (CurrentBars[1] < 0)
                 return;
+
+            // Bars correctly resolves to BarsArray[1] here (BarsInProgress == 1), so this is the
+            // hidden tick series' OWN first-bar-of-session flag - i.e. "is this exact trade the
+            // first trade of a new session" - checked in the same call, same order, as the trade
+            // data below, rather than racing the primary series' own copy of this flag. See the
+            // class-level "New-session detection" doc comment for the full reasoning.
+            if (Bars.IsFirstBarOfSession && CurrentBars[1] != lastSessionFirstTickBarIndex)
+            {
+                lastSessionFirstTickBarIndex = CurrentBars[1];
+                StartNewDayBucket(CurrentBars[0]);
+            }
 
             double price = BarsArray[1].GetClose(CurrentBars[1]);
             double size = BarsArray[1].GetVolume(CurrentBars[1]);
@@ -602,6 +630,16 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
                 return;
 
             double rowSize = Instrument.MasterInstrument.TickSize * Math.Max(1, PriceGroupingTicks);
+
+            // ChartPanel.W can transiently read 0 during a chart resize/dock/workspace-switch
+            // layout pass. In Current Bar mode that just makes the profile momentarily thinner
+            // (the anchor itself is bar-based, not W-based), but in Chart Edge mode the anchor
+            // IS ChartPanel.X + ChartPanel.W, so a 0 width collapses it all the way to
+            // ChartPanel.X (the panel's far left) - producing degenerate/negative-width bars and
+            // zero-length lines, i.e. the profile appears to vanish for that frame. Skip the
+            // frame instead of drawing a collapsed/misplaced profile.
+            if (ChartPanel.W <= 0)
+                return;
 
             float maxBarWidth = (float)(ProfileWidthPercent / 100.0 * ChartPanel.W);
             float anchorFarX;

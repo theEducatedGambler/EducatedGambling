@@ -482,6 +482,16 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
             double tickSize = Instrument.MasterInstrument.TickSize;
             double rowSize = tickSize * Math.Max(1, TickAggregation);
 
+            // ChartPanel.W can transiently read 0 during a chart resize/dock/workspace-switch
+            // layout pass. In Current Bar mode that just makes the profile momentarily thinner
+            // (the anchor itself is bar-based, not W-based), but in Chart Edge mode the anchor
+            // IS ChartPanel.X + ChartPanel.W, so a 0 width collapses it all the way to
+            // ChartPanel.X (the panel's far left) - producing degenerate/negative-width bars and
+            // zero-length lines, i.e. the profile appears to vanish for that frame. Skip the
+            // frame instead of drawing a collapsed/misplaced profile.
+            if (ChartPanel.W <= 0)
+                return;
+
             // nearEdgeX is where the longest (highest-volume) bar's tip can reach - closest to
             // the actual bars. anchorFarX is the fixed pivot (0-volume edge) every row's bar
             // grows left FROM, out past the profile's own max width - this is what makes the
