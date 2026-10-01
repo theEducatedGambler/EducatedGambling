@@ -888,8 +888,9 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
 
                 if (ShowSecondaryValueArea && ShowSecondaryValueAreaLabels)
                 {
-                    AddLabelEntry(entriesByPrice, svaHigh, "SVAH", 1, secondaryValueAreaBrushDx);
-                    AddLabelEntry(entriesByPrice, svaLow, "SVAL", 1, secondaryValueAreaBrushDx);
+                    string svaPrefix = BuildSecondaryValueAreaLabelPrefix();
+                    AddLabelEntry(entriesByPrice, svaHigh, svaPrefix + "SVAH", 1, secondaryValueAreaBrushDx);
+                    AddLabelEntry(entriesByPrice, svaLow, svaPrefix + "SVAL", 1, secondaryValueAreaBrushDx);
                 }
 
                 if (ShowPOCLabels)
@@ -910,6 +911,15 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
                         DrawPriceLabel(chartScale, labelX, hvnClusters[i].Peak, "HVN" + (i + 1), highVolumeNodeBrushDx, labelFormat);
                 }
             }
+        }
+
+        // "VA"/"PR" + the Secondary Value Area % it was computed from, e.g. "VA40-" when
+        // Secondary Value Area From Primary is checked at 40%, or "PR40-" when unchecked
+        // (computed from the full profile instead of the primary Value Area).
+        private string BuildSecondaryValueAreaLabelPrefix()
+        {
+            string basis = SecondaryValueAreaFromPrimary ? "VA" : "PR";
+            return basis + SecondaryValueAreaPercent.ToString("0.##") + "-";
         }
 
         private static void AddLabelEntry(Dictionary<double, List<LabelEntry>> entriesByPrice, double price, string name, int priorityRank, SharpDX.Direct2D1.Brush brush)
