@@ -112,6 +112,8 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
         private System.Windows.Media.Brush _bullLineBrush;
         private System.Windows.Media.Brush _bearLineBrush;
         private System.Windows.Media.Brush _levelFarBrush;
+        private System.Windows.Media.Brush _rejoinBullBorder;
+        private System.Windows.Media.Brush _rejoinBearBorder;
 
         private SharpDX.Direct2D1.SolidColorBrush _bullBrush;
         private SharpDX.Direct2D1.SolidColorBrush _bearBrush;
@@ -178,6 +180,8 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
                 RejoinBullColor  = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromArgb(0xFF, 0x0C, 0x7F, 0xB6)); RejoinBullColor.Freeze();
                 RejoinBearColor  = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromArgb(0xFF, 0xB7, 0x08, 0x59)); RejoinBearColor.Freeze();
                 RejoinOpacity    = 20;
+                RejoinBorderWidth   = 1;
+                RejoinBorderOpacity = 100;
                 ShowRejoinEma    = true;
                 RejoinEmaPeriod  = 50;
                 RejoinEmaWidth   = 1;
@@ -229,6 +233,8 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
                 _bullLineBrush = ApplyOpacity(BullLineColor, LineOpacity);
                 _bearLineBrush = ApplyOpacity(BearLineColor, LineOpacity);
                 _levelFarBrush = ApplyOpacity(LevelFarColor, LineOpacity);
+                _rejoinBullBorder = ApplyOpacity(RejoinBullColor, RejoinBorderOpacity);
+                _rejoinBearBorder = ApplyOpacity(RejoinBearColor, RejoinBorderOpacity);
 
                 Plots[PlotFast].Brush  = ApplyOpacity(FastEMAColor, EMALineOpacity);
                 Plots[PlotFast].Width  = EMALineWidth;
@@ -415,7 +421,7 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
 
         // Follow-up entry areas: during an active trend, a candle that closes outside the cloud on the
         // opposite side AND beyond the rejoin EMA (bear trend: above the cloud and below the EMA; bull trend:
-        // below the cloud and above the EMA) gets a borderless rectangle from its body extreme to its wick extreme.
+        // below the cloud and above the EMA) gets a rectangle from its body extreme to its wick extreme.
         // Candles that traverse the whole cloud (high above the top and low below the bottom) are excluded, and the
         // whole candle must stay on the trend side of the rejoin EMA (bear: high <= EMA; bull: low >= EMA).
         private void CheckRejoin(double fastNow, double slowNow)
@@ -442,17 +448,19 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
             {
                 _checkpointPrice = Close[0];
                 _rejoinTags.Add(rejoinTag);
-                Draw.Rectangle(this, rejoinTag, false,
+                var rect = Draw.Rectangle(this, rejoinTag, false,
                     0, High[0], -RejoinWidthBars, bodyLow,
-                    System.Windows.Media.Brushes.Transparent, RejoinBearColor, RejoinOpacity);
+                    _rejoinBearBorder, RejoinBearColor, RejoinOpacity);
+                if (rect != null) rect.OutlineStroke.Width = RejoinBorderWidth;
             }
             else if (_trendDir > 0 && Close[0] < cloudBot && Low[0] >= ema && bullCheckpoint)
             {
                 _checkpointPrice = Close[0];
                 _rejoinTags.Add(rejoinTag);
-                Draw.Rectangle(this, rejoinTag, false,
+                var rect = Draw.Rectangle(this, rejoinTag, false,
                     0, bodyHigh, -RejoinWidthBars, Low[0],
-                    System.Windows.Media.Brushes.Transparent, RejoinBullColor, RejoinOpacity);
+                    _rejoinBullBorder, RejoinBullColor, RejoinOpacity);
+                if (rect != null) rect.OutlineStroke.Width = RejoinBorderWidth;
             }
         }
 
@@ -922,26 +930,36 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
         public int RejoinOpacity { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Display Rejoin EMA Line", GroupName = "Rejoin Area", Order = 8)]
+        [Range(1, 10)]
+        [Display(Name = "Rejoin Area Border Width", GroupName = "Rejoin Area", Order = 8)]
+        public int RejoinBorderWidth { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 100)]
+        [Display(Name = "Rejoin Area Border Opacity (%)", Description = "Opacity of the rejoin rectangle border (same color as the rejoin fill); 0 hides the border", GroupName = "Rejoin Area", Order = 9)]
+        public int RejoinBorderOpacity { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Display Rejoin EMA Line", GroupName = "Rejoin Area", Order = 10)]
         public bool ShowRejoinEma { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, int.MaxValue)]
-        [Display(Name = "Rejoin EMA Period", GroupName = "Rejoin Area", Order = 9)]
+        [Display(Name = "Rejoin EMA Period", GroupName = "Rejoin Area", Order = 11)]
         public int RejoinEmaPeriod { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 10)]
-        [Display(Name = "Rejoin EMA Line Width", GroupName = "Rejoin Area", Order = 11)]
+        [Display(Name = "Rejoin EMA Line Width", GroupName = "Rejoin Area", Order = 13)]
         public int RejoinEmaWidth { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Rejoin EMA Line Style", GroupName = "Rejoin Area", Order = 12)]
+        [Display(Name = "Rejoin EMA Line Style", GroupName = "Rejoin Area", Order = 14)]
         public DashStyleHelper RejoinEmaStyle { get; set; }
 
         [NinjaScriptProperty]
         [XmlIgnore]
-        [Display(Name = "Rejoin EMA Color", GroupName = "Rejoin Area", Order = 10)]
+        [Display(Name = "Rejoin EMA Color", GroupName = "Rejoin Area", Order = 12)]
         public System.Windows.Media.Brush RejoinEmaColor { get; set; }
 
         [Browsable(false)]
@@ -953,9 +971,66 @@ namespace NinjaTrader.NinjaScript.Indicators.EducatedGambling
 
         [NinjaScriptProperty]
         [Range(0, 100)]
-        [Display(Name = "Rejoin EMA Line Opacity (%)", GroupName = "Rejoin Area", Order = 13)]
+        [Display(Name = "Rejoin EMA Line Opacity (%)", GroupName = "Rejoin Area", Order = 15)]
         public int RejoinEmaOpacity { get; set; }
 
         #endregion
     }
 }
+
+#region NinjaScript generated code. Neither change nor remove.
+
+namespace NinjaTrader.NinjaScript.Indicators
+{
+	public partial class Indicator : NinjaTrader.Gui.NinjaScript.IndicatorRenderBase
+	{
+		private EducatedGambling.EGOptimalEntry[] cacheEGOptimalEntry;
+		public EducatedGambling.EGOptimalEntry EGOptimalEntry(int fastPeriod, int slowPeriod, bool showCloud, System.Windows.Media.Brush fastEMAColor, System.Windows.Media.Brush slowEMAColor, int eMALineWidth, int eMALineOpacity, System.Windows.Media.Brush bullFillColor, System.Windows.Media.Brush bearFillColor, double fillOpacity, int tramaLength, bool useCurrentTimeframe, int timeframeMinutes, bool useClockAnchoredTimeframe, bool showTrama, System.Windows.Media.Brush tramaColor, int tramaWidth, DashStyleHelper tramaStyle, int tramaOpacity, int nearTicks, bool debugLog, int replaceWithinBars, int rectWidthBars, int rectHeightTicks, int rectFillOpacity, System.Windows.Media.Brush bullLineColor, System.Windows.Media.Brush bearLineColor, int exceededLineWidth, DashStyleHelper exceededLineStyle, int lineOpacity, bool showLevelLine, int levelLineWidth, DashStyleHelper levelLineStyle, int levelLookback, int levelMaxTicks, System.Windows.Media.Brush levelFarColor, bool showRejoinArea, int rejoinWidthBars, int maxRejoinAreas, double rejoinCheckpointPoints, System.Windows.Media.Brush rejoinBullColor, System.Windows.Media.Brush rejoinBearColor, int rejoinOpacity, int rejoinBorderWidth, int rejoinBorderOpacity, bool showRejoinEma, int rejoinEmaPeriod, int rejoinEmaWidth, DashStyleHelper rejoinEmaStyle, System.Windows.Media.Brush rejoinEmaColor, int rejoinEmaOpacity)
+		{
+			return EGOptimalEntry(Input, fastPeriod, slowPeriod, showCloud, fastEMAColor, slowEMAColor, eMALineWidth, eMALineOpacity, bullFillColor, bearFillColor, fillOpacity, tramaLength, useCurrentTimeframe, timeframeMinutes, useClockAnchoredTimeframe, showTrama, tramaColor, tramaWidth, tramaStyle, tramaOpacity, nearTicks, debugLog, replaceWithinBars, rectWidthBars, rectHeightTicks, rectFillOpacity, bullLineColor, bearLineColor, exceededLineWidth, exceededLineStyle, lineOpacity, showLevelLine, levelLineWidth, levelLineStyle, levelLookback, levelMaxTicks, levelFarColor, showRejoinArea, rejoinWidthBars, maxRejoinAreas, rejoinCheckpointPoints, rejoinBullColor, rejoinBearColor, rejoinOpacity, rejoinBorderWidth, rejoinBorderOpacity, showRejoinEma, rejoinEmaPeriod, rejoinEmaWidth, rejoinEmaStyle, rejoinEmaColor, rejoinEmaOpacity);
+		}
+
+		public EducatedGambling.EGOptimalEntry EGOptimalEntry(ISeries<double> input, int fastPeriod, int slowPeriod, bool showCloud, System.Windows.Media.Brush fastEMAColor, System.Windows.Media.Brush slowEMAColor, int eMALineWidth, int eMALineOpacity, System.Windows.Media.Brush bullFillColor, System.Windows.Media.Brush bearFillColor, double fillOpacity, int tramaLength, bool useCurrentTimeframe, int timeframeMinutes, bool useClockAnchoredTimeframe, bool showTrama, System.Windows.Media.Brush tramaColor, int tramaWidth, DashStyleHelper tramaStyle, int tramaOpacity, int nearTicks, bool debugLog, int replaceWithinBars, int rectWidthBars, int rectHeightTicks, int rectFillOpacity, System.Windows.Media.Brush bullLineColor, System.Windows.Media.Brush bearLineColor, int exceededLineWidth, DashStyleHelper exceededLineStyle, int lineOpacity, bool showLevelLine, int levelLineWidth, DashStyleHelper levelLineStyle, int levelLookback, int levelMaxTicks, System.Windows.Media.Brush levelFarColor, bool showRejoinArea, int rejoinWidthBars, int maxRejoinAreas, double rejoinCheckpointPoints, System.Windows.Media.Brush rejoinBullColor, System.Windows.Media.Brush rejoinBearColor, int rejoinOpacity, int rejoinBorderWidth, int rejoinBorderOpacity, bool showRejoinEma, int rejoinEmaPeriod, int rejoinEmaWidth, DashStyleHelper rejoinEmaStyle, System.Windows.Media.Brush rejoinEmaColor, int rejoinEmaOpacity)
+		{
+			if (cacheEGOptimalEntry != null)
+				for (int idx = 0; idx < cacheEGOptimalEntry.Length; idx++)
+					if (cacheEGOptimalEntry[idx] != null && cacheEGOptimalEntry[idx].FastPeriod == fastPeriod && cacheEGOptimalEntry[idx].SlowPeriod == slowPeriod && cacheEGOptimalEntry[idx].ShowCloud == showCloud && cacheEGOptimalEntry[idx].FastEMAColor == fastEMAColor && cacheEGOptimalEntry[idx].SlowEMAColor == slowEMAColor && cacheEGOptimalEntry[idx].EMALineWidth == eMALineWidth && cacheEGOptimalEntry[idx].EMALineOpacity == eMALineOpacity && cacheEGOptimalEntry[idx].BullFillColor == bullFillColor && cacheEGOptimalEntry[idx].BearFillColor == bearFillColor && cacheEGOptimalEntry[idx].FillOpacity == fillOpacity && cacheEGOptimalEntry[idx].TramaLength == tramaLength && cacheEGOptimalEntry[idx].UseCurrentTimeframe == useCurrentTimeframe && cacheEGOptimalEntry[idx].TimeframeMinutes == timeframeMinutes && cacheEGOptimalEntry[idx].UseClockAnchoredTimeframe == useClockAnchoredTimeframe && cacheEGOptimalEntry[idx].ShowTrama == showTrama && cacheEGOptimalEntry[idx].TramaColor == tramaColor && cacheEGOptimalEntry[idx].TramaWidth == tramaWidth && cacheEGOptimalEntry[idx].TramaStyle == tramaStyle && cacheEGOptimalEntry[idx].TramaOpacity == tramaOpacity && cacheEGOptimalEntry[idx].NearTicks == nearTicks && cacheEGOptimalEntry[idx].DebugLog == debugLog && cacheEGOptimalEntry[idx].ReplaceWithinBars == replaceWithinBars && cacheEGOptimalEntry[idx].RectWidthBars == rectWidthBars && cacheEGOptimalEntry[idx].RectHeightTicks == rectHeightTicks && cacheEGOptimalEntry[idx].RectFillOpacity == rectFillOpacity && cacheEGOptimalEntry[idx].BullLineColor == bullLineColor && cacheEGOptimalEntry[idx].BearLineColor == bearLineColor && cacheEGOptimalEntry[idx].ExceededLineWidth == exceededLineWidth && cacheEGOptimalEntry[idx].ExceededLineStyle == exceededLineStyle && cacheEGOptimalEntry[idx].LineOpacity == lineOpacity && cacheEGOptimalEntry[idx].ShowLevelLine == showLevelLine && cacheEGOptimalEntry[idx].LevelLineWidth == levelLineWidth && cacheEGOptimalEntry[idx].LevelLineStyle == levelLineStyle && cacheEGOptimalEntry[idx].LevelLookback == levelLookback && cacheEGOptimalEntry[idx].LevelMaxTicks == levelMaxTicks && cacheEGOptimalEntry[idx].LevelFarColor == levelFarColor && cacheEGOptimalEntry[idx].ShowRejoinArea == showRejoinArea && cacheEGOptimalEntry[idx].RejoinWidthBars == rejoinWidthBars && cacheEGOptimalEntry[idx].MaxRejoinAreas == maxRejoinAreas && cacheEGOptimalEntry[idx].RejoinCheckpointPoints == rejoinCheckpointPoints && cacheEGOptimalEntry[idx].RejoinBullColor == rejoinBullColor && cacheEGOptimalEntry[idx].RejoinBearColor == rejoinBearColor && cacheEGOptimalEntry[idx].RejoinOpacity == rejoinOpacity && cacheEGOptimalEntry[idx].RejoinBorderWidth == rejoinBorderWidth && cacheEGOptimalEntry[idx].RejoinBorderOpacity == rejoinBorderOpacity && cacheEGOptimalEntry[idx].ShowRejoinEma == showRejoinEma && cacheEGOptimalEntry[idx].RejoinEmaPeriod == rejoinEmaPeriod && cacheEGOptimalEntry[idx].RejoinEmaWidth == rejoinEmaWidth && cacheEGOptimalEntry[idx].RejoinEmaStyle == rejoinEmaStyle && cacheEGOptimalEntry[idx].RejoinEmaColor == rejoinEmaColor && cacheEGOptimalEntry[idx].RejoinEmaOpacity == rejoinEmaOpacity && cacheEGOptimalEntry[idx].EqualsInput(input))
+						return cacheEGOptimalEntry[idx];
+			return CacheIndicator<EducatedGambling.EGOptimalEntry>(new EducatedGambling.EGOptimalEntry(){ FastPeriod = fastPeriod, SlowPeriod = slowPeriod, ShowCloud = showCloud, FastEMAColor = fastEMAColor, SlowEMAColor = slowEMAColor, EMALineWidth = eMALineWidth, EMALineOpacity = eMALineOpacity, BullFillColor = bullFillColor, BearFillColor = bearFillColor, FillOpacity = fillOpacity, TramaLength = tramaLength, UseCurrentTimeframe = useCurrentTimeframe, TimeframeMinutes = timeframeMinutes, UseClockAnchoredTimeframe = useClockAnchoredTimeframe, ShowTrama = showTrama, TramaColor = tramaColor, TramaWidth = tramaWidth, TramaStyle = tramaStyle, TramaOpacity = tramaOpacity, NearTicks = nearTicks, DebugLog = debugLog, ReplaceWithinBars = replaceWithinBars, RectWidthBars = rectWidthBars, RectHeightTicks = rectHeightTicks, RectFillOpacity = rectFillOpacity, BullLineColor = bullLineColor, BearLineColor = bearLineColor, ExceededLineWidth = exceededLineWidth, ExceededLineStyle = exceededLineStyle, LineOpacity = lineOpacity, ShowLevelLine = showLevelLine, LevelLineWidth = levelLineWidth, LevelLineStyle = levelLineStyle, LevelLookback = levelLookback, LevelMaxTicks = levelMaxTicks, LevelFarColor = levelFarColor, ShowRejoinArea = showRejoinArea, RejoinWidthBars = rejoinWidthBars, MaxRejoinAreas = maxRejoinAreas, RejoinCheckpointPoints = rejoinCheckpointPoints, RejoinBullColor = rejoinBullColor, RejoinBearColor = rejoinBearColor, RejoinOpacity = rejoinOpacity, RejoinBorderWidth = rejoinBorderWidth, RejoinBorderOpacity = rejoinBorderOpacity, ShowRejoinEma = showRejoinEma, RejoinEmaPeriod = rejoinEmaPeriod, RejoinEmaWidth = rejoinEmaWidth, RejoinEmaStyle = rejoinEmaStyle, RejoinEmaColor = rejoinEmaColor, RejoinEmaOpacity = rejoinEmaOpacity }, input, ref cacheEGOptimalEntry);
+		}
+	}
+}
+
+namespace NinjaTrader.NinjaScript.MarketAnalyzerColumns
+{
+	public partial class MarketAnalyzerColumn : MarketAnalyzerColumnBase
+	{
+		public Indicators.EducatedGambling.EGOptimalEntry EGOptimalEntry(int fastPeriod, int slowPeriod, bool showCloud, System.Windows.Media.Brush fastEMAColor, System.Windows.Media.Brush slowEMAColor, int eMALineWidth, int eMALineOpacity, System.Windows.Media.Brush bullFillColor, System.Windows.Media.Brush bearFillColor, double fillOpacity, int tramaLength, bool useCurrentTimeframe, int timeframeMinutes, bool useClockAnchoredTimeframe, bool showTrama, System.Windows.Media.Brush tramaColor, int tramaWidth, DashStyleHelper tramaStyle, int tramaOpacity, int nearTicks, bool debugLog, int replaceWithinBars, int rectWidthBars, int rectHeightTicks, int rectFillOpacity, System.Windows.Media.Brush bullLineColor, System.Windows.Media.Brush bearLineColor, int exceededLineWidth, DashStyleHelper exceededLineStyle, int lineOpacity, bool showLevelLine, int levelLineWidth, DashStyleHelper levelLineStyle, int levelLookback, int levelMaxTicks, System.Windows.Media.Brush levelFarColor, bool showRejoinArea, int rejoinWidthBars, int maxRejoinAreas, double rejoinCheckpointPoints, System.Windows.Media.Brush rejoinBullColor, System.Windows.Media.Brush rejoinBearColor, int rejoinOpacity, int rejoinBorderWidth, int rejoinBorderOpacity, bool showRejoinEma, int rejoinEmaPeriod, int rejoinEmaWidth, DashStyleHelper rejoinEmaStyle, System.Windows.Media.Brush rejoinEmaColor, int rejoinEmaOpacity)
+		{
+			return indicator.EGOptimalEntry(Input, fastPeriod, slowPeriod, showCloud, fastEMAColor, slowEMAColor, eMALineWidth, eMALineOpacity, bullFillColor, bearFillColor, fillOpacity, tramaLength, useCurrentTimeframe, timeframeMinutes, useClockAnchoredTimeframe, showTrama, tramaColor, tramaWidth, tramaStyle, tramaOpacity, nearTicks, debugLog, replaceWithinBars, rectWidthBars, rectHeightTicks, rectFillOpacity, bullLineColor, bearLineColor, exceededLineWidth, exceededLineStyle, lineOpacity, showLevelLine, levelLineWidth, levelLineStyle, levelLookback, levelMaxTicks, levelFarColor, showRejoinArea, rejoinWidthBars, maxRejoinAreas, rejoinCheckpointPoints, rejoinBullColor, rejoinBearColor, rejoinOpacity, rejoinBorderWidth, rejoinBorderOpacity, showRejoinEma, rejoinEmaPeriod, rejoinEmaWidth, rejoinEmaStyle, rejoinEmaColor, rejoinEmaOpacity);
+		}
+
+		public Indicators.EducatedGambling.EGOptimalEntry EGOptimalEntry(ISeries<double> input , int fastPeriod, int slowPeriod, bool showCloud, System.Windows.Media.Brush fastEMAColor, System.Windows.Media.Brush slowEMAColor, int eMALineWidth, int eMALineOpacity, System.Windows.Media.Brush bullFillColor, System.Windows.Media.Brush bearFillColor, double fillOpacity, int tramaLength, bool useCurrentTimeframe, int timeframeMinutes, bool useClockAnchoredTimeframe, bool showTrama, System.Windows.Media.Brush tramaColor, int tramaWidth, DashStyleHelper tramaStyle, int tramaOpacity, int nearTicks, bool debugLog, int replaceWithinBars, int rectWidthBars, int rectHeightTicks, int rectFillOpacity, System.Windows.Media.Brush bullLineColor, System.Windows.Media.Brush bearLineColor, int exceededLineWidth, DashStyleHelper exceededLineStyle, int lineOpacity, bool showLevelLine, int levelLineWidth, DashStyleHelper levelLineStyle, int levelLookback, int levelMaxTicks, System.Windows.Media.Brush levelFarColor, bool showRejoinArea, int rejoinWidthBars, int maxRejoinAreas, double rejoinCheckpointPoints, System.Windows.Media.Brush rejoinBullColor, System.Windows.Media.Brush rejoinBearColor, int rejoinOpacity, int rejoinBorderWidth, int rejoinBorderOpacity, bool showRejoinEma, int rejoinEmaPeriod, int rejoinEmaWidth, DashStyleHelper rejoinEmaStyle, System.Windows.Media.Brush rejoinEmaColor, int rejoinEmaOpacity)
+		{
+			return indicator.EGOptimalEntry(input, fastPeriod, slowPeriod, showCloud, fastEMAColor, slowEMAColor, eMALineWidth, eMALineOpacity, bullFillColor, bearFillColor, fillOpacity, tramaLength, useCurrentTimeframe, timeframeMinutes, useClockAnchoredTimeframe, showTrama, tramaColor, tramaWidth, tramaStyle, tramaOpacity, nearTicks, debugLog, replaceWithinBars, rectWidthBars, rectHeightTicks, rectFillOpacity, bullLineColor, bearLineColor, exceededLineWidth, exceededLineStyle, lineOpacity, showLevelLine, levelLineWidth, levelLineStyle, levelLookback, levelMaxTicks, levelFarColor, showRejoinArea, rejoinWidthBars, maxRejoinAreas, rejoinCheckpointPoints, rejoinBullColor, rejoinBearColor, rejoinOpacity, rejoinBorderWidth, rejoinBorderOpacity, showRejoinEma, rejoinEmaPeriod, rejoinEmaWidth, rejoinEmaStyle, rejoinEmaColor, rejoinEmaOpacity);
+		}
+	}
+}
+
+namespace NinjaTrader.NinjaScript.Strategies
+{
+	public partial class Strategy : NinjaTrader.Gui.NinjaScript.StrategyRenderBase
+	{
+		public Indicators.EducatedGambling.EGOptimalEntry EGOptimalEntry(int fastPeriod, int slowPeriod, bool showCloud, System.Windows.Media.Brush fastEMAColor, System.Windows.Media.Brush slowEMAColor, int eMALineWidth, int eMALineOpacity, System.Windows.Media.Brush bullFillColor, System.Windows.Media.Brush bearFillColor, double fillOpacity, int tramaLength, bool useCurrentTimeframe, int timeframeMinutes, bool useClockAnchoredTimeframe, bool showTrama, System.Windows.Media.Brush tramaColor, int tramaWidth, DashStyleHelper tramaStyle, int tramaOpacity, int nearTicks, bool debugLog, int replaceWithinBars, int rectWidthBars, int rectHeightTicks, int rectFillOpacity, System.Windows.Media.Brush bullLineColor, System.Windows.Media.Brush bearLineColor, int exceededLineWidth, DashStyleHelper exceededLineStyle, int lineOpacity, bool showLevelLine, int levelLineWidth, DashStyleHelper levelLineStyle, int levelLookback, int levelMaxTicks, System.Windows.Media.Brush levelFarColor, bool showRejoinArea, int rejoinWidthBars, int maxRejoinAreas, double rejoinCheckpointPoints, System.Windows.Media.Brush rejoinBullColor, System.Windows.Media.Brush rejoinBearColor, int rejoinOpacity, int rejoinBorderWidth, int rejoinBorderOpacity, bool showRejoinEma, int rejoinEmaPeriod, int rejoinEmaWidth, DashStyleHelper rejoinEmaStyle, System.Windows.Media.Brush rejoinEmaColor, int rejoinEmaOpacity)
+		{
+			return indicator.EGOptimalEntry(Input, fastPeriod, slowPeriod, showCloud, fastEMAColor, slowEMAColor, eMALineWidth, eMALineOpacity, bullFillColor, bearFillColor, fillOpacity, tramaLength, useCurrentTimeframe, timeframeMinutes, useClockAnchoredTimeframe, showTrama, tramaColor, tramaWidth, tramaStyle, tramaOpacity, nearTicks, debugLog, replaceWithinBars, rectWidthBars, rectHeightTicks, rectFillOpacity, bullLineColor, bearLineColor, exceededLineWidth, exceededLineStyle, lineOpacity, showLevelLine, levelLineWidth, levelLineStyle, levelLookback, levelMaxTicks, levelFarColor, showRejoinArea, rejoinWidthBars, maxRejoinAreas, rejoinCheckpointPoints, rejoinBullColor, rejoinBearColor, rejoinOpacity, rejoinBorderWidth, rejoinBorderOpacity, showRejoinEma, rejoinEmaPeriod, rejoinEmaWidth, rejoinEmaStyle, rejoinEmaColor, rejoinEmaOpacity);
+		}
+
+		public Indicators.EducatedGambling.EGOptimalEntry EGOptimalEntry(ISeries<double> input , int fastPeriod, int slowPeriod, bool showCloud, System.Windows.Media.Brush fastEMAColor, System.Windows.Media.Brush slowEMAColor, int eMALineWidth, int eMALineOpacity, System.Windows.Media.Brush bullFillColor, System.Windows.Media.Brush bearFillColor, double fillOpacity, int tramaLength, bool useCurrentTimeframe, int timeframeMinutes, bool useClockAnchoredTimeframe, bool showTrama, System.Windows.Media.Brush tramaColor, int tramaWidth, DashStyleHelper tramaStyle, int tramaOpacity, int nearTicks, bool debugLog, int replaceWithinBars, int rectWidthBars, int rectHeightTicks, int rectFillOpacity, System.Windows.Media.Brush bullLineColor, System.Windows.Media.Brush bearLineColor, int exceededLineWidth, DashStyleHelper exceededLineStyle, int lineOpacity, bool showLevelLine, int levelLineWidth, DashStyleHelper levelLineStyle, int levelLookback, int levelMaxTicks, System.Windows.Media.Brush levelFarColor, bool showRejoinArea, int rejoinWidthBars, int maxRejoinAreas, double rejoinCheckpointPoints, System.Windows.Media.Brush rejoinBullColor, System.Windows.Media.Brush rejoinBearColor, int rejoinOpacity, int rejoinBorderWidth, int rejoinBorderOpacity, bool showRejoinEma, int rejoinEmaPeriod, int rejoinEmaWidth, DashStyleHelper rejoinEmaStyle, System.Windows.Media.Brush rejoinEmaColor, int rejoinEmaOpacity)
+		{
+			return indicator.EGOptimalEntry(input, fastPeriod, slowPeriod, showCloud, fastEMAColor, slowEMAColor, eMALineWidth, eMALineOpacity, bullFillColor, bearFillColor, fillOpacity, tramaLength, useCurrentTimeframe, timeframeMinutes, useClockAnchoredTimeframe, showTrama, tramaColor, tramaWidth, tramaStyle, tramaOpacity, nearTicks, debugLog, replaceWithinBars, rectWidthBars, rectHeightTicks, rectFillOpacity, bullLineColor, bearLineColor, exceededLineWidth, exceededLineStyle, lineOpacity, showLevelLine, levelLineWidth, levelLineStyle, levelLookback, levelMaxTicks, levelFarColor, showRejoinArea, rejoinWidthBars, maxRejoinAreas, rejoinCheckpointPoints, rejoinBullColor, rejoinBearColor, rejoinOpacity, rejoinBorderWidth, rejoinBorderOpacity, showRejoinEma, rejoinEmaPeriod, rejoinEmaWidth, rejoinEmaStyle, rejoinEmaColor, rejoinEmaOpacity);
+		}
+	}
+}
+
+#endregion
